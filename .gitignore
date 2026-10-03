@@ -1,0 +1,38 @@
+# Virtual Environment & Python cache
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node & Frontend Build
+node_modules/
+dist/
+build/
+.vite/
+vite.config.*.timestamp-*
+*.tsbuildinfo
+
+# ChromaDB & Heavy Local Data
+chroma_db/
+data/
+data/CUAD_v1*
+*.jsonl
+.cache/
+
+# Environment & Secrets
+.env
+.env*
+.env.local
+*.log
+logs/
+*-debug.log*
+*.exe
+
+.claude-replay.*
+.tmp-*
+/.figma/design-context/
+/.plugins/
+/.opencode-skills/

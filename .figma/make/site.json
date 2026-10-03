@@ -1,0 +1,10 @@
+{
+  "description": "Streamline legal contract analysis with advanced AI-driven insights, enabling enterprises to identify conflicts and manage documents efficiently.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

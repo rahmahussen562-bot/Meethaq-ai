@@ -1,0 +1,9 @@
+@import './styles/fonts.css';
+@import 'tailwindcss';
+@import './styles/theme.css';
+@layer base {
+  body { @apply bg-background text-foreground font-sans antialiased; }
+  button { @apply cursor-pointer; }
+  button, input, select, textarea, a { @apply focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-stone-500; }
+  ::selection { @apply bg-stone-300/60; }
+}

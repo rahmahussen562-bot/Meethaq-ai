@@ -1,0 +1,20 @@
+# ── Core LLM runtime ──────────────────────────────────────────────────────────
+ollama>=0.3.0
+
+# ── Embeddings & reranking ─────────────────────────────────────────────────────
+sentence-transformers>=2.7.0   # dense embeddings + cross-encoder reranker
+torch>=2.0.0                   # required backend for sentence-transformers
+
+# ── Vector store ──────────────────────────────────────────────────────────────
+chromadb>=0.5.0
+
+# ── Document loading ──────────────────────────────────────────────────────────
+pymupdf>=1.24.0                # PDF loading  (import as fitz)
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+tqdm>=4.66.0                   # progress bars during indexing
+
+# ── Local API ─────────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.0.0
