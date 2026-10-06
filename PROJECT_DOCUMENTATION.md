@@ -1,3 +1,5 @@
+> Historical design document. For the current deterministic extractive implementation, native ONNX setup, real telemetry, and Cloudflare operation, use README.md and AUDIT_REPORT.md. Ollama query expansion, cross-encoder reranking, generated prose, and fabricated demonstration counts described below are no longer active.
+
 # Meethaq AI (ميثاق للذكاء الاصطناعي)
 ## Deterministic Local-First Legal Contract Audit & Compliance Engine
 ### محرك التدقيق والامتثال القانوني الحتمي للعقود محلي النواة

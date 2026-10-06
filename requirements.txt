@@ -1,20 +1,17 @@
-# ── Core LLM runtime ──────────────────────────────────────────────────────────
-ollama>=0.3.0
+# Local vector search and CPU embeddings; no PyTorch or remote inference.
+chromadb==1.5.9
+chroma-hnswlib==0.7.6
+onnxruntime==1.20.1
+numpy==1.26.4
+tokenizers==0.23.2
+ollama>=0.6,<1
 
-# ── Embeddings & reranking ─────────────────────────────────────────────────────
-sentence-transformers>=2.7.0   # dense embeddings + cross-encoder reranker
-torch>=2.0.0                   # required backend for sentence-transformers
+# Document loading and explicit online CUAD download (--download only).
+pymupdf>=1.24,<2
+huggingface-hub>=0.24,<2
+tqdm>=4.66,<5
 
-# ── Vector store ──────────────────────────────────────────────────────────────
-chromadb>=0.5.0
-
-# ── Document loading ──────────────────────────────────────────────────────────
-pymupdf>=1.24.0                # PDF loading  (import as fitz)
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
-tqdm>=4.66.0                   # progress bars during indexing
-
-# ── Local API ─────────────────────────────────────────────────────────────────
-fastapi>=0.115.0
-uvicorn>=0.32.0
-pydantic>=2.0.0
+# Local API.
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+pydantic>=2,<3

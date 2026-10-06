@@ -1,312 +1,288 @@
-"""
-rag_pipeline.py
-================
-Meethaq AI - PyTorch-Free, ONNX-accelerated local RAG pipeline.
-Uses native ChromaDB ONNX embeddings and cosine similarity to bypass Windows torch/c10.dll issues.
+"""Local RAG with calibrated retrieval and deterministic verbatim answers.
+
+Ollama generation and LLM query expansion are excluded from the audit path:
+sampling settings and citation prompts cannot prove that a generated claim is
+entailed by a contract.
 """
 
 from __future__ import annotations
 
+import bisect
+import json
 import hashlib
+import os
 import re
-from typing import Optional
+from pathlib import Path
 
-import chromadb
-import chromadb.utils.embedding_functions as embedding_functions
-import ollama
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 0. CONFIGURATION & DEFAULTS
-# ══════════════════════════════════════════════════════════════════════════════
+from grounding import (
+    ABSTENTION, MAX_QUESTION_LENGTH, eligible_chunks, in_contract_scope,
+    load_calibration, normalize_question, policy_signature, render_evidence,
+)
 
 EMBED_MODEL_NAME = "ONNX-all-MiniLM-L6-v2 (Native)"
-RERANK_MODEL_NAME = "HNSW Cosine Similarity"
+RERANK_MODEL_NAME = "Exact cosine similarity"
 LLM_MODEL = "llama3.2:3b"
-
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
-RETRIEVAL_TOP_K = 5
+RETRIEVAL_TOP_K = 12
+PROJECT_DIR = Path(__file__).resolve().parent
 
-CHROMA_DIR = "./chroma_db"
-COLLECTION_NAME = "meethaq_contracts"
-
-SYSTEM_PROMPT = """\
-You are Meethaq AI, a deterministic, uncompromising legal auditor and contract compliance assistant.
-
-STRICT OPERATIONAL RULES:
-1. Rely EXCLUSIVELY and ENTIRELY on the provided context passages below. Never extrapolate, interpolate, or draw on external legal doctrine.
-2. If the context does not contain direct, explicit textual evidence to answer the question, output EXACTLY this sentence and nothing else:
-   "I could not find an answer to this question in the provided documents."
-3. Every factual claim, number, percentage, or deadline must be followed immediately by its citation tag (e.g., [Source 1], [Source 2]).
-4. Maintain an objective, structured legal audit tone. Highlight identified contractual discrepancies or conflicts clearly.
-"""
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. TEXT CHUNKER
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TextChunker:
+    """Bounded original-text windows; IDs hash all text rather than its prefix."""
+
     def __init__(self, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP):
+        if chunk_size < 32 or not 0 <= overlap < chunk_size:
+            raise ValueError("Require chunk_size >= 32 and 0 <= overlap < chunk_size")
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def _split(self, text: str, separators: list[str]) -> list[str]:
-        if not separators:
-            return [text[i:i + self.chunk_size]
-                    for i in range(0, len(text), self.chunk_size - self.overlap)]
-
-        sep = separators[0]
-        parts = text.split(sep)
-        chunks: list[str] = []
-        buffer = ""
-
-        for part in parts:
-            candidate = (buffer + sep + part).strip() if buffer else part.strip()
-            if len(candidate) <= self.chunk_size:
-                buffer = candidate
-            else:
-                if buffer:
-                    chunks.append(buffer)
-                if len(part) > self.chunk_size:
-                    chunks.extend(self._split(part, separators[1:]))
-                    buffer = ""
-                else:
-                    buffer = part.strip()
-
-        if buffer:
-            chunks.append(buffer)
-
-        return [c for c in chunks if c.strip()]
-
-    def _add_overlap(self, chunks: list[str]) -> list[str]:
-        if len(chunks) <= 1:
-            return chunks
-        result = [chunks[0]]
-        for i in range(1, len(chunks)):
-            tail = chunks[i - 1][-self.overlap:]
-            result.append((tail + " " + chunks[i]).strip())
-        return result
+    @staticmethod
+    def _boundaries(text: str) -> list[int]:
+        return [match.end() for match in re.finditer(
+            r"(?<=[.!?])\s+(?=[A-Z0-9(\"'])|\n\s*\n", text
+        )]
 
     def chunk(self, doc: dict) -> list[dict]:
-        separators = ["\n\n", "\n", ". ", "; ", " "]
-        raw_chunks = self._split(doc["text"], separators)
-        overlapping = self._add_overlap(raw_chunks)
+        source, text = doc.get("source"), doc.get("text")
+        if not isinstance(source, str) or not source.strip() or not isinstance(text, str):
+            raise ValueError("Each document needs a nonempty source and string text")
+        boundaries = self._boundaries(text)
+        boundary_set = set(boundaries) | {0, len(text)}
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = min(start + self.chunk_size, len(text))
+            if end < len(text):
+                # Prefer whole sentences/paragraphs; a single long clause remains
+                # bounded and its incomplete edges will not be used as evidence.
+                options = [point for point in boundaries
+                           if start + self.chunk_size // 3 <= point <= end]
+                if options:
+                    end = options[-1]
+                else:
+                    space = text.rfind(" ", start + self.chunk_size // 3, end)
+                    if space > start:
+                        end = space + 1
+            raw = text[start:end]
+            body = raw.strip()
+            if body:
+                left = start + len(raw) - len(raw.lstrip())
+                right = end - len(raw) + len(raw.rstrip())
+                chunk_id = hashlib.sha256(
+                    f"{source}\0{len(chunks)}\0{body}".encode("utf-8")
+                ).hexdigest()
+                chunks.append({
+                    "text": body, "source": source, "chunk_index": len(chunks),
+                    "chunk_id": chunk_id, "char_start": left, "char_end": right,
+                    "starts_at_boundary": start in boundary_set,
+                    "ends_at_boundary": end in boundary_set,
+                })
+            if end == len(text):
+                break
+            desired = end - self.overlap
+            previous = [point for point in boundaries if start < point <= desired]
+            following = [point for point in boundaries if desired < point <= end]
+            next_start = previous[-1] if previous else following[0] if following else end
+            start = max(start + 1, next_start)
+        return chunks
 
-        result = []
-        for idx, text in enumerate(overlapping):
-            if not text.strip():
-                continue
-            chunk_id = hashlib.md5(
-                f"{doc['source']}::{idx}::{text[:50]}".encode()
-            ).hexdigest()
-            result.append({
-                "text": text,
-                "source": doc["source"],
-                "chunk_index": idx,
-                "chunk_id": chunk_id,
-            })
-        return result
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. VECTOR STORE (Native ONNX ChromaDB)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class VectorStore:
-    def __init__(self, chroma_dir: str = CHROMA_DIR, collection: str = COLLECTION_NAME):
-        print("[VectorStore] Initializing ChromaDB with Native ONNX Embedding Function...")
-        self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
-        self.client = chromadb.PersistentClient(path=chroma_dir)
-        self.collection = self.client.get_or_create_collection(
-            name=collection,
-            embedding_function=self.embedding_fn,
-            metadata={"hnsw:space": "cosine"}
-        )
-
-    def add_chunks(self, chunks: list[dict]) -> None:
-        if not chunks:
-            return
-        batch_size = 200
-        for start in range(0, len(chunks), batch_size):
-            batch = chunks[start:start + batch_size]
-            texts = [c["text"] for c in batch]
-            ids = [c["chunk_id"] for c in batch]
-            metadatas = [
-                {
-                    "source": str(c.get("source", "unknown")),
-                    "chunk_index": int(c.get("chunk_index", 0)),
-                    "contract_category": str(c.get("contract_category", "Unknown"))
-                }
-                for c in batch
-            ]
-            self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
-
-    def query(self, query_text: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
-        total_count = self.collection.count()
-        if total_count == 0:
-            return []
-
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=min(top_k, total_count),
-            include=["documents", "metadatas", "distances"]
-        )
-
-        candidates = []
-        if not results["documents"] or not results["documents"][0]:
-            return candidates
-
-        for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
-            similarity_score = max(0.0, min(1.0, 1.0 - (dist / 2.0)))
-            candidates.append({
-                "text": doc,
-                "source": meta.get("source", "unknown"),
-                "chunk_index": meta.get("chunk_index", -1),
-                "contract_category": meta.get("contract_category", "Unknown"),
-                "rerank_score": round(similarity_score, 4)
-            })
-        return candidates
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. QUERY HANDLER & RETRIEVER
-# ══════════════════════════════════════════════════════════════════════════════
 
 class QueryHandler:
-    @staticmethod
-    def normalize(query: str) -> str:
-        return re.sub(r"\s+", " ", query).strip()
+    normalize = staticmethod(normalize_question)
 
     @staticmethod
     def expand_with_llm(query: str, model: str = LLM_MODEL) -> str:
-        prompt = (
-            "Rewrite the search query to improve contract retrieval accuracy. "
-            "Output ONLY the expanded query, no explanations.\n\n"
-            f"Query: {query}"
-        )
-        try:
-            res = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
-            expanded = res["message"]["content"].strip()
-            return expanded if len(expanded) < 300 else query
-        except Exception:
-            return query
+        """Compatibility only: generative expansion is disabled for grounding."""
+        return normalize_question(query)
 
 
 class Retriever:
-    def __init__(self, vector_store: VectorStore, top_k: int = RETRIEVAL_TOP_K, **kwargs):
+    def __init__(self, vector_store, top_k: int = RETRIEVAL_TOP_K, **kwargs):
         self.store = vector_store
         self.top_k = top_k
 
     def retrieve(self, query: str) -> list[dict]:
-        # Fast native vector retrieval with ranked cosine similarity scores
         return self.store.query(query, top_k=self.top_k)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. CONTEXT & GENERATION
-# ══════════════════════════════════════════════════════════════════════════════
 
 class ContextAssembler:
     @staticmethod
     def assemble(chunks: list[dict]) -> tuple[str, list[dict]]:
-        lines = []
-        sources = []
-        for i, chunk in enumerate(chunks, start=1):
-            label = f"[Source {i}]"
-            lines.append(
-                f"{label}\n"
-                f"Document: {chunk['source']} (Category: {chunk.get('contract_category', 'N/A')})\n"
-                f"Confidence Score: {chunk.get('rerank_score', 0):.4f}\n\n"
-                f"{chunk['text']}"
-            )
-            sources.append({
-                "label": label,
-                "source": chunk["source"],
-                "chunk_index": chunk["chunk_index"],
-                "rerank_score": chunk.get("rerank_score", 0),
-                "text": chunk["text"],
-            })
-        return "\n\n" + ("─" * 50 + "\n\n").join(lines), sources
+        return render_evidence(chunks)
 
-
-class LLMGenerator:
-    def __init__(self, model: str = LLM_MODEL):
-        self.model = model
-
-    def generate(self, question: str, context: str, stream: bool = False) -> str:
-        user_message = (
-            f"Context passages from verified contracts:\n{context}\n\n"
-            f"Audit Question: {question}\n\n"
-            "Audit Assessment (Citing explicit [Source N] tags):"
-        )
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ]
-        response = ollama.chat(model=self.model, messages=messages)
-        return response["message"]["content"]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. ORCHESTRATOR (RAGPipeline)
-# ══════════════════════════════════════════════════════════════════════════════
 
 class RAGPipeline:
     def __init__(
-        self,
-        embed_model: str = EMBED_MODEL_NAME,
-        rerank_model: str = RERANK_MODEL_NAME,
-        llm_model: str = LLM_MODEL,
-        chunk_size: int = CHUNK_SIZE,
-        chunk_overlap: int = CHUNK_OVERLAP,
-        retrieval_top_k: int = RETRIEVAL_TOP_K,
-        rerank_top_n: int = 3,
-        chroma_dir: str = CHROMA_DIR,
-        collection_name: str = COLLECTION_NAME,
+        self, embed_model: str = EMBED_MODEL_NAME,
+        rerank_model: str = RERANK_MODEL_NAME, llm_model: str = LLM_MODEL,
+        chunk_size: int = CHUNK_SIZE, chunk_overlap: int = CHUNK_OVERLAP,
+        retrieval_top_k: int = RETRIEVAL_TOP_K, rerank_top_n: int = 3,
+        chroma_dir: str | None = None, collection_name: str | None = None,
+        calibration_path: str | Path | None = None, vector_store=None,
     ):
+        if retrieval_top_k < 1 or rerank_top_n < 1:
+            raise ValueError("Retrieval limits must be positive")
+        if vector_store is None:
+            # Native dependencies initialize only when a pipeline is requested.
+            from vector_store import VectorStore
+            vector_store = VectorStore(chroma_dir=chroma_dir, collection=collection_name)
         self.chunker = TextChunker(chunk_size=chunk_size, overlap=chunk_overlap)
-        self.vector_store = VectorStore(chroma_dir=chroma_dir, collection=collection_name)
-        self.retriever = Retriever(vector_store=self.vector_store, top_k=rerank_top_n)
+        self.vector_store = vector_store
+        self.retriever = Retriever(vector_store, top_k=retrieval_top_k)
         self.query_handler = QueryHandler()
         self.assembler = ContextAssembler()
-        self.generator = LLMGenerator(model=llm_model)
+        self.max_sources = rerank_top_n
+        self.llm_model = llm_model
+        self.policy = policy_signature(retrieval_top_k, rerank_top_n)
+        selected_path = Path(calibration_path or os.getenv(
+            "MEETHAQ_CALIBRATION_PATH", "data/rag_calibration.json"
+        ))
+        self.calibration_path = selected_path if selected_path.is_absolute() else PROJECT_DIR / selected_path
+
+    def _prepared_chunks(self, doc: dict) -> list[dict]:
+        """Preserve independently labeled complete clauses as evidence boundaries."""
+        source, text = doc["contract_name"], doc["text"]
+        chunks = self.chunker.chunk({"source": source, "text": text})
+        boundaries = sorted(set([0, len(text), *self.chunker._boundaries(text)]))
+        spans = []
+        seen = set()
+        skipped = 0
+        for annotation in doc.get("annotations", []):
+            label, annotated = annotation.get("clause_type"), annotation.get("text")
+            if not isinstance(label, str) or not isinstance(annotated, str) or not annotated.strip():
+                skipped += 1
+                continue
+            start = annotation.get("start", -1)
+            if not isinstance(start, int) or start < 0 or text[start:start + len(annotated)] != annotated:
+                start = text.find(annotated)
+            if start < 0:
+                skipped += 1
+                continue
+            end = start + len(annotated)
+            left = boundaries[max(0, bisect.bisect_right(boundaries, start) - 1)]
+            right = boundaries[min(len(boundaries) - 1, bisect.bisect_left(boundaries, end))]
+            original = text[left:right]
+            body = original.strip()
+            left += len(original) - len(original.lstrip())
+            right -= len(original) - len(original.rstrip())
+            # Do not truncate a clause to make it fit an evidence window.
+            if not body or len(body) > 12000:
+                skipped += 1
+                continue
+            key = (label, left, right)
+            if key not in seen:
+                seen.add(key)
+                spans.append({"clause_type": label, "text": body, "start": left, "end": right})
+        extra_ranges = set()
+        for span in spans:
+            if any(chunk["char_start"] == span["start"] and span["end"] == chunk["char_end"]
+                   for chunk in chunks):
+                continue
+            key = (span["start"], span["end"])
+            if key in extra_ranges:
+                continue
+            extra_ranges.add(key)
+            identifier = hashlib.sha256(
+                f"{source}\0complete-clause\0{key[0]}\0{key[1]}\0{span['text']}".encode("utf-8")
+            ).hexdigest()
+            chunks.append({"source": source, "text": span["text"], "chunk_id": identifier,
+                           "chunk_index": len(chunks), "char_start": key[0], "char_end": key[1],
+                           "starts_at_boundary": True, "ends_at_boundary": True})
+        for chunk in chunks:
+            supported = [{"clause_type": span["clause_type"], "text": span["text"]}
+                         for span in spans if chunk["char_start"] <= span["start"]
+                         and span["end"] <= chunk["char_end"] and span["text"] in chunk["text"]]
+            chunk["annotated_evidence"] = json.dumps(supported, ensure_ascii=False, sort_keys=True)
+            chunk["retrieval_unit"] = "complete_clause" if any(
+                chunk["char_start"] == span["start"] and chunk["char_end"] == span["end"]
+                for span in spans) else "context_window"
+            chunk["contract_category"] = str(doc.get("contract_category", "Unknown"))
+        print(f"[Indexing] Complete labeled evidence: {len(spans)} spans; "
+              f"{len(extra_ranges)} additional complete-clause chunks; {skipped} labels excluded.", flush=True)
+        return chunks
 
     def index_prepared(self, docs: list[dict]) -> int:
-        """Indexes pre-processed contract records directly from ingest_cuad.py."""
-        print(f"\n[Indexing] Ingesting {len(docs)} structured contract records...")
-        all_chunks: list[dict] = []
+        """Validate first, then index one document at a time with visible progress."""
+        seen_sources = set()
         for doc in docs:
-            chunks = self.chunker.chunk({"source": doc["contract_name"], "text": doc["text"]})
-            for c in chunks:
-                c["contract_category"] = doc.get("contract_category", "Unknown")
-            all_chunks.extend(chunks)
+            name, text = doc.get("contract_name"), doc.get("text")
+            if not isinstance(name, str) or not name.strip() or not isinstance(text, str) or not text.strip():
+                raise ValueError("Prepared documents require contract_name and nonempty text")
+            if name in seen_sources:
+                raise ValueError(f"Duplicate prepared contract source: {name}")
+            seen_sources.add(name)
+        print(f"[Indexing] Ingesting {len(docs)} structured contract records...", flush=True)
+        indexed = 0
+        for number, doc in enumerate(docs, 1):
+            chunks = self._prepared_chunks(doc)
+            print(f"[Indexing] Contract {number}/{len(docs)}: {len(chunks)} chunks", flush=True)
+            self.vector_store.replace_chunks(doc["contract_name"], chunks, reuse_embeddings=True)
+            indexed += len(chunks)
+            print(f"[Indexing] Persisted count: {self.vector_store.collection.count()}", flush=True)
+        print(f"[Indexing] Complete. ChromaDB count: {self.vector_store.collection.count()} chunks.", flush=True)
+        return indexed
 
-        self.vector_store.add_chunks(all_chunks)
-        print(f"✓ Indexing complete. ChromaDB count: {self.vector_store.collection.count()} chunks.\n")
-        return len(all_chunks)
-
-    def stats(self) -> dict:
+    def _state(self) -> dict:
+        fingerprint = self.vector_store.corpus_fingerprint()
+        status, threshold = load_calibration(
+            self.calibration_path, fingerprint, self.vector_store.embedding_signature, self.policy
+        )
         return {
             "collection": self.vector_store.collection.name,
             "indexed_chunks": self.vector_store.collection.count(),
-            "embed_model": EMBED_MODEL_NAME,
-            "rerank_model": RERANK_MODEL_NAME,
-            "llm_model": LLM_MODEL,
+            "chroma_dir": self.vector_store.chroma_dir,
+            "corpus_fingerprint": fingerprint,
+            "embedding_signature": self.vector_store.embedding_signature,
+            "embed_model": EMBED_MODEL_NAME, "rerank_model": RERANK_MODEL_NAME,
+            "llm_model": self.llm_model, "answer_mode": "extractive",
+            "llm_invoked": False, "calibration_status": status,
+            "max_cosine_distance": threshold,
         }
 
-    def query(
-        self,
-        question: str,
-        stream: bool = False,
-        expand_query: bool = False,
-    ) -> str:
-        """Run the full RAG pipeline for a user question."""
-        normalized = self.query_handler.normalize(question)
-        if expand_query:
-            normalized = self.query_handler.expand_with_llm(normalized)
+    def stats(self) -> dict:
+        return self._state()
+
+    def audit(self, question: str, expand_query: bool = False) -> dict:
+        normalized = normalize_question(question)
+        if not normalized or len(normalized) > MAX_QUESTION_LENGTH:
+            raise ValueError(f"Question must contain 1 to {MAX_QUESTION_LENGTH} characters")
+        stats = self._state()
+        stats["query_expansion"] = "disabled"
+        response = {"answer": ABSTENTION, "sources": [], "stats": stats}
+        if not in_contract_scope(normalized):
+            stats["abstention_reason"] = "out_of_scope"
+            return response
+        if stats["indexed_chunks"] == 0:
+            stats["abstention_reason"] = "empty_index"
+            return response
+        if stats["calibration_status"] != "calibrated":
+            stats["abstention_reason"] = "calibration_required"
+            return response
         chunks = self.retriever.retrieve(normalized)
-        if not chunks:
-            return "I could not find an answer to this question in the provided documents."
-        context, _ = self.assembler.assemble(chunks)
-        return self.generator.generate(question=normalized, context=context, stream=stream)
+        evidence = eligible_chunks(normalized, chunks, stats["max_cosine_distance"])[:self.max_sources]
+        # A concurrent ingestion must not reuse calibration from the old corpus.
+        if self.vector_store.corpus_fingerprint() != stats["corpus_fingerprint"]:
+            stats["calibration_status"] = "stale"
+            stats["max_cosine_distance"] = None
+            stats["abstention_reason"] = "corpus_changed"
+            stats["indexed_chunks"] = self.vector_store.collection.count()
+            return response
+        answer, sources = self.assembler.assemble(evidence)
+        if not sources:
+            stats["abstention_reason"] = "insufficient_evidence"
+        return {"answer": answer, "sources": sources, "stats": stats}
+
+    def close(self) -> None:
+        close_store = getattr(self.vector_store, "close", None)
+        if callable(close_store):
+            close_store()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def query(self, question: str, stream: bool = False, expand_query: bool = False) -> str:
+        return self.audit(question, expand_query=expand_query)["answer"]

@@ -36,3 +36,6 @@ logs/
 /.figma/design-context/
 /.plugins/
 /.opencode-skills/
+
+# Reviewable configuration template; never commit real environment files.
+!.env.example

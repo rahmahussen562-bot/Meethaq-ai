@@ -1,0 +1,3 @@
+# Preserve /api routes for a proxy or Pages Functions; rewrite application routes.
+/audit /index.html 200
+/audit/* /index.html 200

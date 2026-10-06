@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 ingest_cuad.py  —  Meethaq AI · CUAD v1 ingestion & legal-aware preprocessing
 =============================================================================
@@ -56,6 +56,10 @@ As a library
 from __future__ import annotations
 
 import argparse
+import faulthandler
+import os
+import subprocess
+import traceback
 import json
 import re
 import sys
@@ -813,9 +817,13 @@ def load_cuad_contracts(
 def save_jsonl(docs: list[dict], out_path: str | Path) -> Path:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8") as fh:
+    temporary = out.with_name(out.name + ".new")
+    with open(temporary, "w", encoding="utf-8") as fh:
         for d in docs:
             fh.write(json.dumps(d, ensure_ascii=False) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temporary, out)
     return out
 
 
@@ -854,6 +862,48 @@ def _print_summary(docs: list[dict]) -> None:
     print("═" * 64)
 
 
+def _index_in_child(out: Path, chroma_dir: str, collection: str) -> None:
+    """Catch native access violations and enforce explicit worker completion."""
+    from vector_store import ensure_disk_space, resolve_chroma_dir
+    directory = resolve_chroma_dir(chroma_dir)
+    ensure_disk_space(directory)
+    environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    command = [
+        sys.executable, "-B", "-u", str(Path(__file__).resolve()),
+        "--processed", str(out.resolve()), "--index-worker",
+        "--chroma-dir", directory, "--collection", collection,
+    ]
+    print(f"[Indexing] Starting supervised worker; database={directory}; collection={collection}", flush=True)
+    result = subprocess.run(command, env=environment, cwd=str(Path(__file__).resolve().parent))
+    if result.returncode:
+        code = result.returncode
+        raise RuntimeError(
+            f"Indexing worker failed with exit code {code} (0x{code & 0xffffffff:08X}). "
+            "See the last flushed stage/native traceback above. Check disk space, "
+            "available memory, cached ONNX files and competing database writers; "
+            "the JSONL export was preserved."
+        )
+
+
+def _index_processed_in_worker(path: Path, chroma_dir: str, collection: str) -> int:
+    from rag_pipeline import RAGPipeline
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
+    faulthandler.enable(all_threads=True)
+    docs = load_processed(path)
+    pipeline = None
+    try:
+        pipeline = RAGPipeline(chroma_dir=chroma_dir, collection_name=collection)
+        pipeline.index_prepared(docs)
+        print(f"[Indexing] Completed and persisted {pipeline.stats()['indexed_chunks']} chunks.", flush=True)
+        return 0
+    finally:
+        if pipeline is not None:
+            pipeline.close()
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Ingest & preprocess CUAD v1 for the Meethaq AI RAG pipeline.")
     ap.add_argument("--json", type=Path, help="path to CUAD_v1.json")
@@ -863,9 +913,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--limit", type=int, help="process only the first N contracts")
     ap.add_argument("--titles", nargs="*", help="process only these contract titles (JSON mode)")
     ap.add_argument("--index", action="store_true", help="also index into ChromaDB via RAGPipeline")
-    ap.add_argument("--chroma-dir", default="./chroma_db")
-    ap.add_argument("--collection", default="meethaq_contracts")
+    ap.add_argument("--chroma-dir", default=None, help="persistent DB directory, anchored to this project")
+    ap.add_argument("--processed", type=Path, help="index an existing prepared JSONL export")
+    ap.add_argument("--index-worker", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--collection", default=os.environ.get("MEETHAQ_COLLECTION", "meethaq_contracts"))
     args = ap.parse_args(argv)
+    if args.limit is not None and args.limit < 1:
+        ap.error("--limit must be positive")
+    if args.index_worker:
+        if args.processed is None:
+            ap.error("--index-worker requires --processed")
+        return _index_processed_in_worker(args.processed, args.chroma_dir, args.collection)
+    if args.processed is not None:
+        if not args.index:
+            ap.error("--processed requires --index")
+        _index_in_child(args.processed, args.chroma_dir, args.collection)
+        return 0
 
     cleaner = LegalTextCleaner()
     json_path = args.json
@@ -888,11 +951,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[ingest] wrote {len(docs)} contracts → {out}")
 
     if args.index:
-        from rag_pipeline import RAGPipeline                         # lazy: heavy imports
-        rag = RAGPipeline(chroma_dir=args.chroma_dir, collection_name=args.collection)
-        rag.index_prepared(docs)
+        _index_in_child(out, args.chroma_dir, args.collection)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
+    faulthandler.enable(all_threads=True)
+    try:
+        sys.exit(main())
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)

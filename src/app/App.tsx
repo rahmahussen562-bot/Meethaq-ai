@@ -19,7 +19,7 @@ import {
 import {
   DEFAULT_TELEMETRY,
   fetchTelemetry,
-  runAuditQuery,
+  sourceForCitation,
   sendAuditQuery,
   type AuditResponse,
   type SourceItem,
@@ -137,9 +137,6 @@ export function RouteErrorFallback() {
   )
 }
 
-const OFFLINE_ALERT =
-  "[SYSTEM ALERT] Local API at port 8000 is offline. Run 'python api.py' to enable inference."
-
 type MeethaqContextValue = {
   searchQuery: string
   setSearchQuery: (value: string) => void
@@ -169,67 +166,86 @@ function MeethaqProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [telemetry, setTelemetry] = useState<TelemetryResponse>(DEFAULT_TELEMETRY)
+  const auditSequence = useRef(0)
+  const telemetryVersion = useRef(0)
+  const activeAudit = useRef<AbortController | null>(null)
+  const lifecycleVersion = useRef(0)
 
   useEffect(() => {
-    let isMounted = true
-    try {
-      fetchTelemetry()
-        .then((data) => {
-          if (isMounted && data) {
-            setTelemetry(data)
-          }
-        })
-        .catch((err) => {
-          console.warn("[MeethaqProvider] Telemetry fetch fallback applied:", err)
-          if (isMounted) {
-            setTelemetry(DEFAULT_TELEMETRY)
-          }
-        })
-    } catch (err) {
-      console.warn("[MeethaqProvider] Synchronous telemetry fetch error:", err)
-      if (isMounted) {
-        setTelemetry(DEFAULT_TELEMETRY)
+    const mountedVersion = ++lifecycleVersion.current
+    let disposed = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let poll: AbortController | undefined
+    async function refreshTelemetry() {
+      poll = new AbortController()
+      const version = telemetryVersion.current
+      try {
+        const data = await fetchTelemetry(poll.signal)
+        if (!disposed && version === telemetryVersion.current) setTelemetry(data)
+      } catch (error) {
+        if (!disposed && version === telemetryVersion.current) {
+          setTelemetry({ status: error instanceof Error ? error.message : "Contract index unavailable." })
+        }
+      } finally {
+        if (!disposed) timer = setTimeout(refreshTelemetry, 15000)
       }
     }
+    void refreshTelemetry()
     return () => {
-      isMounted = false
+      disposed = true
+      clearTimeout(timer)
+      poll?.abort()
+      // StrictMode immediately replays setup; cancel only if it stays unmounted.
+      queueMicrotask(() => {
+        if (lifecycleVersion.current === mountedVersion) {
+          activeAudit.current?.abort()
+          auditSequence.current += 1
+        }
+      })
     }
   }, [])
 
   const runAudit = useCallback(async (query: string, expandQuery = false) => {
-    if (!query || typeof query !== "string") return
-    setSearchQuery(query)
+    const question = typeof query === "string" ? query.trim() : ""
+    if (!question) return
+    activeAudit.current?.abort()
+    const controller = new AbortController()
+    activeAudit.current = controller
+    const sequence = ++auditSequence.current
+    telemetryVersion.current += 1
+    setSearchQuery(question)
+    setAuditResponse(null)
+    setSelectedSource(null)
     setIsLoading(true)
     setErrorMessage(null)
     try {
-      const result = await sendAuditQuery(query, expandQuery)
+      const result = await sendAuditQuery(question, expandQuery, controller.signal)
+      if (sequence !== auditSequence.current) return
       setAuditResponse(result)
-      setSelectedSource(result?.sources?.[0] ?? null)
-    } catch (err) {
-      console.warn("[MeethaqProvider] runAudit error:", err)
-      setErrorMessage(OFFLINE_ALERT)
+      setSelectedSource(result.sources[0] ?? null)
+      telemetryVersion.current += 1
+      setTelemetry({ ...result.stats, status: result.stats.status || "Contract index connected" })
+    } catch (error) {
+      if (sequence !== auditSequence.current || controller.signal.aborted) return
+      setErrorMessage(error instanceof Error ? error.message : "The audit request failed.")
     } finally {
-      setIsLoading(false)
+      if (sequence === auditSequence.current) setIsLoading(false)
     }
   }, [])
 
   return (
-    <MeethaqContext.Provider
-      value={{
-        searchQuery,
-        setSearchQuery,
-        auditResponse,
-        selectedSource,
-        setSelectedSource,
-        isLoading,
-        errorMessage,
-        telemetry,
-        runAudit,
-      }}
-    >
+    <MeethaqContext.Provider value={{
+      searchQuery, setSearchQuery, auditResponse, selectedSource,
+      setSelectedSource, isLoading, errorMessage, telemetry, runAudit,
+    }}>
       {children}
     </MeethaqContext.Provider>
   )
+}
+
+function chunkCountLabel(telemetry: TelemetryResponse): string {
+  const count = telemetry.indexed_chunks ?? telemetry.total_chunks
+  return typeof count === "number" ? count.toLocaleString() : "\u2014"
 }
 
 function Icon({
@@ -346,7 +362,7 @@ const sessions = [
     status: "Completed",
     type: "complete",
     action: "View Chat",
-    second: "Export PDF",
+    second: "Export Evidence",
   },
 ]
 
@@ -372,9 +388,7 @@ function Header({
     return () => window.removeEventListener("keydown", handler)
   }, [])
 
-  const chunkDisplay = Number(
-    telemetry?.indexed_chunks ?? telemetry?.total_chunks ?? 729,
-  )
+  const chunkDisplay = chunkCountLabel(telemetry)
 
   return (
     <header className="flex h-[76px] items-center justify-between gap-5 border-b border-border px-5 md:px-9">
@@ -383,11 +397,11 @@ function Header({
         <span className="hidden border-l border-border pl-3 font-mono text-[9px] text-muted-foreground sm:block">
           v1.0 LOCAL
         </span>
-        <span className="hidden border-l border-border pl-3 font-mono text-[9px] text-muted-foreground md:block">
-          {telemetry?.status || "Air-Gapped Local Host"}
+        <span title={telemetry.status} className="hidden max-w-48 truncate border-l border-border pl-3 font-mono text-[9px] text-muted-foreground md:block">
+          {telemetry.status || "Checking contract index..."}
         </span>
         <span className="hidden border-l border-border pl-3 font-mono text-[9px] text-muted-foreground lg:block">
-          {chunkDisplay.toLocaleString()} CHUNKS
+          {chunkDisplay} CHUNKS
         </span>
       </Link>
       <div className="hidden w-full max-w-[460px] items-center gap-3 rounded-lg border border-border bg-white/50 px-3 py-2.5 lg:flex">
@@ -592,7 +606,7 @@ function Dashboard() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  aria-label="Attach document"
+                  aria-label="Select a document filename (not indexed)"
                   onClick={() => fileRef.current?.click()}
                   className="rounded-md p-1.5 text-stone-500 hover:bg-muted"
                 >
@@ -609,7 +623,7 @@ function Dashboard() {
                 />
                 {attachment ? (
                   <span className="text-[10px] text-stone-500">
-                    {attachment} · Selected locally
+                    {attachment} - Not indexed; run local ingestion first
                   </span>
                 ) : (
                   <span className="hidden text-[10px] text-stone-400 sm:block">
@@ -632,7 +646,7 @@ function Dashboard() {
         <section className="mt-11">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h2 className="font-serif text-[29px]">Active Workspaces</h2>
+              <h2 className="font-serif text-[29px]">Sample Workspaces</h2>
               <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[9px] text-stone-500">
                 {sessions.length + custom.length}
               </span>
@@ -645,6 +659,7 @@ function Dashboard() {
               New workspace
             </button>
           </div>
+          <p className="mt-2 text-[10px] text-stone-500">Sample sessions for navigation. Index status is reported by the backend above.</p>
           <div className="mt-4 flex items-center justify-between border-b border-border">
             <div className="flex gap-6">
               {["All workspaces", "Needs attention"].map((label) => (
@@ -785,8 +800,8 @@ function Dashboard() {
                           {session.second && (
                             <button
                               onClick={() =>
-                                session.second === "Export PDF"
-                                  ? exportPdf()
+                                session.second === "Export Evidence"
+                                  ? navigate("/audit")
                                   : navigate(
                                       `/audit?q=${encodeURIComponent(session.name)}&view=evidence`,
                                     )
@@ -816,7 +831,7 @@ function Dashboard() {
                                   Open workspace
                                 </button>
                                 <button
-                                  onClick={exportPdf}
+                                  onClick={() => navigate("/audit")}
                                   className="w-full px-3 py-2 text-left text-[10px] hover:bg-muted"
                                 >
                                   Export summary
@@ -867,7 +882,7 @@ function Dashboard() {
           <span className="flex items-center gap-1.5 font-mono text-[8px]">
             <span className="size-1 rounded-full bg-[#687867]" />
             LOCAL RUNTIME<span className="mx-2">/</span>
-            {(Number(telemetry?.indexed_chunks ?? telemetry?.total_chunks ?? 729)).toLocaleString()} CHUNKS INDEXED
+            {chunkCountLabel(telemetry)} CHUNKS INDEXED
           </span>
         </footer>
       </main>
@@ -926,47 +941,23 @@ function Dashboard() {
   )
 }
 
-function exportPdf() {
-  const content =
-    "BT /F1 18 Tf 50 770 Td (MEETHAQ - AUDIT SUMMARY) Tj /F1 11 Tf 0 -35 Td (Vendor Agreement: Reference Audit) Tj 0 -25 Td (MSA section 8.2: daily penalty 1.0%; aggregate ceiling 5%.) Tj 0 -20 Td (Addendum 2 section 3.1: daily penalty 1.0%; aggregate ceiling 15%.) Tj 0 -25 Td (Conflict: ceiling differs by 10 percentage points.) Tj 0 -25 Td (Recommendation: confirm order of precedence with legal counsel.) Tj 0 -35 Td (Demonstration only. No live inference performed.) Tj ET"
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+function exportAudit(query: string, response: AuditResponse | null) {
+  if (!response) return
+  const lines = [
+    "MEETHAQ AUDIT", "", "Question: " + query, "",
+    response.answer, "", "Sources:",
+    ...response.sources.flatMap((source) => [
+      source.label + " " + source.source + " #" + source.chunk_index,
+      "Chunk ID: " + (source.chunk_id || "unavailable"),
+      source.text, "",
+    ]),
   ]
-  let pdf = "%PDF-1.4\n"
-  const offsets = [0]
-  objects.forEach((object, index) => {
-    offsets.push(pdf.length)
-    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`
-  })
-  const xref = pdf.length
-  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
-    .slice(1)
-    .map((offset) => `${offset.toString().padStart(10, "0")} 00000 n \n`)
-    .join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`
-  const url = URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }))
+  const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" }))
   const link = document.createElement("a")
   link.href = url
-  link.download = "Meethaq-Audit-Summary.pdf"
+  link.download = "Meethaq-Audit-Evidence.txt"
   link.click()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-function selectSourceByCitation(
-  sources: SourceItem[] = [],
-  citation: number,
-): SourceItem | null {
-  if (!Array.isArray(sources)) return null
-  return (
-    sources.find(
-      (item) => item?.label?.toLowerCase() === `[source ${citation}]`,
-    ) ||
-    sources[citation - 1] ||
-    null
-  )
 }
 
 function CitedAnswer({
@@ -980,19 +971,21 @@ function CitedAnswer({
 }) {
   const safeAnswer = typeof answer === "string" ? answer : ""
   const safeSources = Array.isArray(sources) ? sources : []
-  const parts = safeAnswer.split(/(\[Source\s+\d+\])/gi)
+  const parts = safeAnswer.split(/(\[Source [1-9]\d*\])/g)
   return (
     <p className="mt-4 whitespace-pre-wrap text-xs leading-7 text-stone-500">
       {parts.map((part, index) => {
-        const match = part.match(/\[Source\s+(\d+)\]/i)
+        const match = part.match(/^\[Source ([1-9]\d*)\]$/)
         if (!match) {
           return <span key={`${part}-${index}`}>{part}</span>
         }
-        const cited = selectSourceByCitation(safeSources, Number(match[1]))
+        const cited = sourceForCitation(safeSources, Number(match[1]))
         return (
           <button
             key={`${part}-${index}`}
             type="button"
+            aria-controls="clause-inspector"
+            disabled={!cited}
             onClick={() => cited && onCite(cited)}
             className="mx-0.5 inline-flex cursor-pointer items-center rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-[8px] text-stone-700 hover:border-stone-500 hover:bg-stone-200"
           >
@@ -1006,7 +999,7 @@ function CitedAnswer({
 
 function AuditWorkspace() {
   const [params] = useSearchParams()
-  const initialQuery = params.get("q") || "Compare MSA §8 with Addendum 2."
+  const initialQuery = params.get("q") || ""
   const {
     searchQuery,
     auditResponse,
@@ -1018,7 +1011,7 @@ function AuditWorkspace() {
   } = useMeethaq()
   const [query, setQuery] = useState("")
   const [notice, setNotice] = useState("")
-  const displayedQuery = searchQuery || initialQuery
+  const displayedQuery = searchQuery || initialQuery || "Ask a question about the indexed contracts."
   const sources = auditResponse?.sources ?? []
   const lastRequested = useRef("")
 
@@ -1033,7 +1026,8 @@ function AuditWorkspace() {
     }
     lastRequested.current = nextQuery
     void runAudit(nextQuery)
-  }, [initialQuery, params, runAudit, searchQuery, isLoading, auditResponse])
+    // A follow-up changes provider state, but must not replay the URL question.
+  }, [initialQuery, runAudit])
 
   return (
     <div className="min-h-screen">
@@ -1053,9 +1047,9 @@ function AuditWorkspace() {
               Enterprise Vendor Audit · Side-by-side evidence review
             </p>
           </div>
-          <button className={secondary} onClick={exportPdf}>
+          <button className={secondary} disabled={!auditResponse || isLoading} onClick={() => exportAudit(displayedQuery, auditResponse)}>
             <Icon name="download" />
-            Export PDF
+            Export Evidence
           </button>
         </div>
         {errorMessage && (
@@ -1088,7 +1082,7 @@ function AuditWorkspace() {
                   Retrieving grounded clauses…
                 </h2>
                 <p className="mt-4 text-xs leading-7 text-stone-500">
-                  Dense retrieval and cross-encoder reranking are running against
+                  Cosine retrieval and evidence checks are running against
                   the local contract index.
                 </p>
                 <div className="mt-5 h-[3px] w-full overflow-hidden rounded-full bg-[#e8e3db]">
@@ -1099,9 +1093,12 @@ function AuditWorkspace() {
               <>
                 <h2 className="mt-5 font-serif text-[27px] leading-8">
                   {auditResponse
-                    ? "Audit findings from local retrieval."
+                    ? (sources.length ? "Retrieved contract evidence." : "No supported answer found.")
                     : "Your audit is ready to be configured."}
                 </h2>
+                {auditResponse?.stats.calibration_status && auditResponse.stats.calibration_status !== "calibrated" && (
+                  <p role="status" className="mt-3 text-[10px] leading-6 text-stone-500">Retrieval calibration is required for the current contract index.</p>
+                )}
                 {auditResponse ? (
                   <CitedAnswer
                     answer={auditResponse.answer}
@@ -1158,7 +1155,7 @@ function AuditWorkspace() {
               </button>
             </form>
           </section>
-          <aside className="border-t border-border bg-[#f7f4ef] p-6 md:p-8 lg:border-t-0 lg:border-l">
+          <aside id="clause-inspector" className="border-t border-border bg-[#f7f4ef] p-6 md:p-8 lg:border-t-0 lg:border-l">
             <div className="flex items-center justify-between">
               <h2 className="font-serif text-[26px]">
                 Evidence & clause inspector
@@ -1170,7 +1167,7 @@ function AuditWorkspace() {
               </span>
             </div>
             <p className="mt-2 text-[10px] text-stone-500">
-              Rerank relevance · Source-grounded context
+              Cosine similarity ? Exact contract excerpts
             </p>
             {sources.length > 0 && (
               <div className="mt-4 flex flex-wrap gap-1.5">
@@ -1212,7 +1209,7 @@ function AuditWorkspace() {
               </div>
               <div className="mt-4 border-t border-border pt-4">
                 <p className="font-mono text-[8px] tracking-wider text-stone-400">
-                  {selectedSource?.label || "SOURCE"} · RERANK{" "}
+                  {selectedSource?.label || "SOURCE"} - COSINE SIMILARITY{" "}
                   {selectedSource != null && selectedSource.rerank_score != null
                     ? Number(selectedSource.rerank_score).toFixed(3)
                     : "—"}
@@ -1226,44 +1223,13 @@ function AuditWorkspace() {
                 </p>
               </div>
             </div>
-            <h3 className="mb-3 mt-7 text-xs font-medium">
-              Dual-clause comparison
-            </h3>
-            <div className="overflow-hidden rounded-lg border border-border">
-              <table className="w-full text-left text-[10px]">
-                <thead className="bg-[#eee9e2] text-[9px] text-stone-500">
-                  <tr>
-                    <th className="p-3 font-normal">Term</th>
-                    <th className="p-3 font-normal">
-                      {sources[0]?.source || "MSA_v4.pdf"}
-                    </th>
-                    <th className="p-3 font-normal">
-                      {sources[1]?.source || "Addendum_02.pdf"}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white">
-                  <tr className="border-t border-border">
-                    <td className="p-3 text-stone-500">Ceiling</td>
-                    <td className="p-3 font-mono">5%</td>
-                    <td className="p-3 font-mono text-[#9b6547]">
-                      15% <span className="text-[7px]">CONFLICT</span>
-                    </td>
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td className="p-3 text-stone-500">Daily rate</td>
-                    <td className="p-3 font-mono">1.0%</td>
-                    <td className="p-3 font-mono">1.0%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <p className="mt-6 text-[10px] leading-6 text-stone-500">Review the exact retrieved clauses using their source citations.</p>
             <button
               className={`${secondary} mt-6 w-full`}
               onClick={async () => {
                 try {
                   const proof = selectedSource
-                    ? `${selectedSource.label || "[Source]"} ${selectedSource.source || "Document"} #${selectedSource.chunk_index ?? 0} (rerank ${selectedSource.rerank_score != null ? Number(selectedSource.rerank_score).toFixed(3) : "0.000"}): ${selectedSource.text || auditResponse?.answer || ""}`
+                    ? `${selectedSource.label || "[Source]"} ${selectedSource.source || "Document"} #${selectedSource.chunk_index ?? 0} (cosine similarity ${selectedSource.rerank_score != null ? Number(selectedSource.rerank_score).toFixed(3) : "0.000"}): ${selectedSource.text || auditResponse?.answer || ""}`
                     : auditResponse?.answer ||
                       "No live source selected. Run an audit to copy grounded proof."
                   await navigator.clipboard.writeText(proof)

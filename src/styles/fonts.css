@@ -1,1 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,wght@0,400;0,450;0,500;1,400&display=swap');
+/* System fonts keep the complete interface available without network access. */
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}

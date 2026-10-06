@@ -1,190 +1,97 @@
-# Local RAG Pipeline
+# Meethaq AI
 
-End-to-end Retrieval-Augmented Generation with a two-stage retrieval
-architecture, running entirely on your machine — no cloud APIs, no API keys.
+React 19/Vite client and a local FastAPI contract evidence service. ChromaDB 1.5.9 uses its Python SegmentAPI with chroma-hnswlib 0.7.6 to persist CPU all-MiniLM-L6-v2 ONNX embeddings in the project-root chroma_db directory. The default collection is meethaq_contracts. Retrieval computes exact cosine distances over stored vectors. The Python SegmentAPI is used consistently with explicit persistence verification. Native index crashes on this Windows installation were traced to the older system MSVCP140.dll 14.31 runtime; the optional project runtime below supplies verified 14.44 DLLs before native imports.
 
-```
-Documents → Clean → Chunk → Embed → ChromaDB
-                                        │
-User Query → Normalize ─────► Dense Retrieval (Top-12)
-                                        │
-                              Cross-Encoder Rerank (Top-3)
-                                        │
-                               Context Assembly
-                                        │
-                          Ollama llama3.2:3b → Answer
-```
+## Answer contract
 
----
+Audits return exact retrieved contract excerpts, each followed by a clickable [Source N]. The backend never generates factual answer text or invokes Ollama in this strict mode. The client also verifies every excerpt against its corresponding source text. Query expansion is disabled, including for legacy clients that send expand_query=true.
 
-## Stack
+Questions outside contract scope, missing evidence, distances at or above the calibrated cutoff, and missing/stale calibration return exactly:
 
-| Component | Library | Model |
-|---|---|---|
-| Dense embeddings | `sentence-transformers` | `all-MiniLM-L6-v2` |
-| Vector store | `chromadb` | — |
-| Cross-encoder reranker | `sentence-transformers` | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| LLM | `ollama` | `llama3.2:3b` |
-| PDF loading | `pymupdf` | — |
+    I could not find an answer to this question in the provided documents.
 
----
+A finite relevance evaluation cannot prove perfect relevance for every possible question. Exact excerpts prevent generated claims; conservative scope and evidence coverage checks can abstain on valid paraphrases, compound questions, or unsupported languages. The complete chunk remains available in the inspector for legal context.
 
-## Setup
+## Local setup
 
-### 1. Virtual environment
+Use Node 22.18+ or 24 and Python 3.11, tested here with Python 3.11.9. Python 3.14 has not been validated for this backend. Install Python requirements in a virtual environment and frontend dependencies with pnpm. The existing Vite server uses port 8443.
 
-**Windows**
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-```
+    py -3.11 -m venv .venv
+    .venv\Scripts\python.exe -B -m pip install -r requirements.txt
+    pnpm install
 
-**macOS / Linux**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
+For local frontend pages on localhost/127.0.0.1, an unset VITE_API_URL selects http://127.0.0.1:8000. Database paths resolve against this project's directory rather than the terminal's working directory.
 
-### 2. Install dependencies
+On Windows, use the Microsoft Visual C++ x64 runtime 14.44 or later for these native dependencies. When installing the current official redistributable is unavailable, import its vcRuntimeMinimum_amd64 CAB into the project cache:
 
-```bash
-pip install -r requirements.txt
-```
+    powershell -NoProfile -File .\provision_native_runtime.ps1 -CabPath C:\path\to\vcRuntimeMinimum_amd64\cab1.cab
 
-> First run downloads the embedding model (~90 MB) and the cross-encoder
-> (~80 MB) from HuggingFace automatically.
+The importer accepts exactly twelve x64 DLLs with valid Microsoft signatures and a consistent version of at least 14.44. It checks sizes and free space, verifies hashes, and writes .cache/native-runtime/dll/provisioned.json. Existing DLLs are reused only when they match the supplied CAB. This setup performs no download or installer action and changes no Windows DLLs or services.
 
-### 3. Pull the LLM
+When this verified project cache is present, the backend preloads its runtime before importing Chroma, NumPy, or ONNX. Otherwise it uses the system runtime. The system MSVCP140.dll on the audited machine remains at 14.31; the backend's process uses the project-local 14.44 copy. Restart the backend after provisioning a native runtime.
 
-Make sure Ollama is running, then:
+Provision the official ONNX model explicitly while online, before indexing or air-gapped operation:
 
-```bash
-ollama pull llama3.2:3b
-```
+    .venv\Scripts\python.exe -B provision_onnx.py --download
 
----
+For an air-gapped installation, transfer the official Chroma onnx.tar.gz archive and import it locally:
 
-## Quickstart
+    .venv\Scripts\python.exe -B provision_onnx.py --archive C:\path\to\onnx.tar.gz
 
-### As a library
+Setup verifies the official SHA-256 before extracting files, checks available disk space throughout, and prints the absolute model directory. The project cache is .cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx. The backend uses an existing legacy cache at ~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx when model.onnx is present; otherwise it defaults to the project cache. Set MEETHAQ_ONNX_MODEL_DIR to select a cache explicitly. Relative values resolve against the project root:
 
-```python
-from rag_pipeline import RAGPipeline
+    $env:MEETHAQ_ONNX_MODEL_DIR = ".cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx"
 
-rag = RAGPipeline()
+Prestage the CUAD input before going offline. Embedding and audit execution use local CPU inference and never download models. Ollama remains an optional local service; it is unnecessary for extractive audits. A successful model setup alone does not populate the collection or install calibration; perform the indexing and calibration steps below.
 
-# Index a folder of PDFs, text files, and/or markdown files
-rag.index_documents("./my_docs")
+## Index and calibrate
 
-# Ask a question — answer streams to the terminal, full string returned
-answer = rag.query("What are the main findings of the report?")
-```
+Index the processed CUAD JSONL already present in data. Reprocessing raw CUAD is optional and --download is an explicit online operation.
 
-### Index a single file
+    .venv\Scripts\python.exe -B ingest_cuad.py --processed data/cuad_processed.jsonl --index
+    .venv\Scripts\python.exe -B calibrate_rag.py --create-cuad-cases data/cuad_processed.jsonl
+    .venv\Scripts\python.exe -B calibrate_rag.py --cases data/retrieval_evaluation.json
 
-```python
-rag.index_documents("./contract.pdf")
-answer = rag.query("What is the termination clause?")
-```
+Start the backend with the project virtual environment after setup, indexing, and calibration. Restart it after changing model files or backend code:
 
-### Interactive CLI
+    .venv\Scripts\python.exe -B api.py
 
-```bash
-# Start the REPL
-python rag_pipeline.py
+Calibration fixes clause-topic and negative-query splits before retrieving distances. The cutoff is selected on calibration cases, then frozen for held-out validation. Failed validation does not enable retrieval. Review and expand the independently labeled fixture to cover your actual contracts and questions.
 
-# Or index a folder on startup
-python rag_pipeline.py ./my_docs
-```
+The local data/rag_calibration.report.json records raw distances, sample sizes, supported positive recall, false accepts and threshold selection. The installed data/rag_calibration.json is bound to corpus content/metadata, embedding settings, metric and gate/retrieval code. Reindexing or changing the policy requires recalibration. These artifacts and legal data are intentionally ignored by Git.
 
-CLI commands:
+The completed local corpus has 1,863 persisted records across 20 contracts, including 350 complete clause retrieval units. The installed cutoff is distance < 0.5760104796196565. For this installation, use the fixed data/retrieval_evaluation_v2.json fixture when recalibrating:
 
-| Command | Action |
-|---|---|
-| `/index <path>` | Index a file or directory |
-| `/stats` | Show collection statistics |
-| `/clear` | Wipe the entire index |
-| `exit` / `quit` | Exit |
+    .venv\Scripts\python.exe -B calibrate_rag.py --cases data/retrieval_evaluation_v2.json
 
----
+The final fixture has 8/9 supported positives and 9/9 negative abstentions. Queries were reused during debugging and synonymous queries can normalize to the same intent, so these are regression measurements rather than independent generalization accuracy. AUDIT_REPORT.md preserves the failed evaluations and explains the limits.
 
-## Configuration
+GET /api/telemetry reports the real persistent indexed_chunks and total_chunks, plus calibration_status. GET /api/health returns ready=true only for a nonempty, calibrated index. A reachable but unready backend is distinct from an offline backend. Storage errors return HTTP 503, never a fake zero.
 
-All defaults live at the top of `rag_pipeline.py`:
+## Cloudflare
 
-```python
-EMBED_MODEL      = "all-MiniLM-L6-v2"
-RERANK_MODEL     = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-LLM_MODEL        = "llama3.2:3b"
+For Cloudflare Pages, set VITE_API_URL to the current HTTPS tunnel origin in the build environment, then rebuild. Example value: https://your-tunnel.trycloudflare.com. /api and trailing slash suffixes are normalized. A tunnel URL change requires a rebuild because Vite environment variables are compiled into assets. public/_redirects supports direct /audit navigation without rewriting API failures into the SPA.
 
-CHUNK_SIZE       = 500    # characters
-CHUNK_OVERLAP    = 75     # characters
-RETRIEVAL_TOP_K  = 12     # candidates from dense retrieval
-RERANK_TOP_N     = 3      # final chunks after reranking
+For Workers, wrangler.toml and cloudflare/worker.ts serve dist assets and proxy /api requests. Set MEETHAQ_API_ORIGIN in the Workers deployment environment to the backend's HTTPS tunnel origin. Leave VITE_API_URL unset for this same-origin proxy configuration.
 
-CHROMA_DIR       = "./chroma_db"
-COLLECTION_NAME  = "rag_docs"
-```
+Remote sites never silently select local loopback. HTTPS sites reject HTTP API configuration. FastAPI permits anchored localhost, 127.0.0.1, pages.dev, workers.dev and trycloudflare.com origins; MEETHAQ_CORS_ORIGINS adds comma-separated explicit origins for custom domains. Cookies are unused and credentialed CORS is disabled.
 
-Override per-instance:
+Cloudflare access transmits queries and returned excerpts through Cloudflare. Fully air-gapped use means running the frontend/backend locally without a tunnel.
 
-```python
-rag = RAGPipeline(
-    chunk_size=800,
-    rerank_top_n=5,
-    llm_model="llama3.1:8b",   # swap in a better model if your RAM allows
-)
-```
+## Validation and audit results
 
----
+    pnpm run typecheck
+    pnpm test
+    pnpm run build
+    .venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_*.py"
 
-## Adding Document Formats
+On Windows, direct Node entrypoints can be used when the pnpm command shim is unavailable:
 
-Open `DocumentLoader` in `rag_pipeline.py` and add a loader method plus a
-dispatch entry:
+    node node_modules/typescript/bin/tsc --noEmit
+    node node_modules/typescript/bin/tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler --lib ES2022,DOM --skipLibCheck cloudflare/worker.ts
+    node tests/frontend.test.mjs
+    node tests/api-client.test.mjs
+    node cloudflare/test_worker.mjs
+    node node_modules/vite/bin/vite.js build
 
-```python
-@staticmethod
-def _load_docx(path: Path) -> str:
-    import docx
-    doc = docx.Document(str(path))
-    return "\n".join(p.text for p in doc.paragraphs)
-
-# Register it:
-_LOADERS = {
-    ".txt":  _load_txt.__func__,
-    ".md":   _load_md.__func__,
-    ".pdf":  _load_pdf.__func__,
-    ".docx": _load_docx.__func__,   # ← new
-}
-```
-
----
-
-## Pipeline Module Map
-
-| Step | Class | Key method |
-|---|---|---|
-| 1. Load | `DocumentLoader` | `.load(source)` |
-| 2. Clean | `TextCleaner` | `.clean(text)` |
-| 3. Chunk | `TextChunker` | `.chunk(doc)` |
-| 4–5. Embed + Store | `VectorStore` | `.add_chunks(chunks)` |
-| 6. Query rewrite | `QueryHandler` | `.normalize(q)` / `.expand_with_llm(q)` |
-| 7. Query embed | `VectorStore` | `.embed([text])` |
-| 8. Dense retrieval | `VectorStore` | `.query(q, top_k)` |
-| 9. Reranking | `Retriever` | `.retrieve(q)` |
-| 10. Context | `ContextAssembler` | `.assemble(chunks)` |
-| 11. Generation | `LLMGenerator` | `.generate(q, context)` |
-
----
-
-## Troubleshooting
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `Connection refused` | Ollama not running | Start Ollama or run `ollama serve` |
-| `model not found` | Model not pulled | `ollama pull llama3.2:3b` |
-| Empty retrieval results | No documents indexed | Call `rag.index_documents(path)` first |
-| Very slow first query | Models loading into memory | Normal — subsequent queries are faster |
-| Out of memory | Embedding too many chunks | Reduce `RETRIEVAL_TOP_K` or use a smaller embed model |
-| `No supported documents found` | Wrong path or unsupported format | Check the path; add a custom loader for the format |
+See AUDIT_REPORT.md for identified bugs, evidence, applied fixes and the actual validation results. The historical PROJECT_DOCUMENTATION.md describes earlier design goals and must not be used as the current implementation specification.

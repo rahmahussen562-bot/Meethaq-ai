@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "format": "oxfmt"
+    "format": "oxfmt",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/frontend.test.mjs && node tests/api-client.test.mjs && node cloudflare/test_worker.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
