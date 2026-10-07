@@ -1,15 +1,11 @@
-"""Local RAG with calibrated retrieval and deterministic verbatim answers.
-
-Ollama generation and LLM query expansion are excluded from the audit path:
-sampling settings and citation prompts cannot prove that a generated claim is
-entailed by a contract.
-"""
+"""Local RAG with calibrated retrieval and validated Ollama synthesis."""
 
 from __future__ import annotations
 
 import bisect
 import json
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
@@ -18,6 +14,7 @@ from grounding import (
     ABSTENTION, MAX_QUESTION_LENGTH, eligible_chunks, in_contract_scope,
     load_calibration, normalize_question, policy_signature, render_evidence,
 )
+from llm_synthesis import OllamaSynthesizer, OllamaUnavailable, SynthesisRejected
 
 EMBED_MODEL_NAME = "ONNX-all-MiniLM-L6-v2 (Native)"
 RERANK_MODEL_NAME = "Exact cosine similarity"
@@ -26,6 +23,7 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 RETRIEVAL_TOP_K = 12
 PROJECT_DIR = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
 
 
 class TextChunker:
@@ -120,6 +118,7 @@ class RAGPipeline:
         retrieval_top_k: int = RETRIEVAL_TOP_K, rerank_top_n: int = 3,
         chroma_dir: str | None = None, collection_name: str | None = None,
         calibration_path: str | Path | None = None, vector_store=None,
+        synthesizer=None,
     ):
         if retrieval_top_k < 1 or rerank_top_n < 1:
             raise ValueError("Retrieval limits must be positive")
@@ -134,6 +133,7 @@ class RAGPipeline:
         self.assembler = ContextAssembler()
         self.max_sources = rerank_top_n
         self.llm_model = llm_model
+        self.synthesizer = synthesizer or OllamaSynthesizer(model=llm_model)
         self.policy = policy_signature(retrieval_top_k, rerank_top_n)
         selected_path = Path(calibration_path or os.getenv(
             "MEETHAQ_CALIBRATION_PATH", "data/rag_calibration.json"
@@ -235,13 +235,17 @@ class RAGPipeline:
             "corpus_fingerprint": fingerprint,
             "embedding_signature": self.vector_store.embedding_signature,
             "embed_model": EMBED_MODEL_NAME, "rerank_model": RERANK_MODEL_NAME,
-            "llm_model": self.llm_model, "answer_mode": "extractive",
+            "llm_model": self.llm_model, "answer_mode": "grounded_llm_synthesis",
             "llm_invoked": False, "calibration_status": status,
             "max_cosine_distance": threshold,
+            "llm_status": getattr(self.synthesizer, "last_status", "unchecked"),
         }
 
     def stats(self) -> dict:
         return self._state()
+
+    def llm_health(self) -> dict:
+        return self.synthesizer.health()
 
     def audit(self, question: str, expand_query: bool = False) -> dict:
         normalized = normalize_question(question)
@@ -268,10 +272,31 @@ class RAGPipeline:
             stats["abstention_reason"] = "corpus_changed"
             stats["indexed_chunks"] = self.vector_store.collection.count()
             return response
-        answer, sources = self.assembler.assemble(evidence)
+        _, sources = self.assembler.assemble(evidence)
         if not sources:
             stats["abstention_reason"] = "insufficient_evidence"
-        return {"answer": answer, "sources": sources, "stats": stats}
+            return response
+        try:
+            synthesis = self.synthesizer.synthesize(normalized, sources)
+        except OllamaUnavailable as exc:
+            logger.error("Grounded synthesis unavailable: %s", exc)
+            stats["llm_status"] = "unavailable"
+            stats["abstention_reason"] = "llm_unavailable"
+            return response
+        except SynthesisRejected as exc:
+            logger.warning("Rejected ungrounded Ollama output: %s", exc)
+            stats["llm_status"] = "invalid_output"
+            stats["abstention_reason"] = "invalid_llm_output"
+            return response
+        if synthesis is None:
+            stats["llm_status"] = "ready"
+            stats["abstention_reason"] = "llm_abstained"
+            return response
+        stats["llm_invoked"] = True
+        stats["llm_status"] = "ready"
+        cited = set(synthesis.cited_labels)
+        cited_sources = [source for source in sources if source["label"] in cited]
+        return {"answer": synthesis.answer, "sources": cited_sources, "stats": stats}
 
     def close(self) -> None:
         close_store = getattr(self.vector_store, "close", None)

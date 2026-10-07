@@ -4,13 +4,13 @@ React 19/Vite client and a local FastAPI contract evidence service. ChromaDB 1.5
 
 ## Answer contract
 
-Audits return exact retrieved contract excerpts, each followed by a clickable [Source N]. The backend never generates factual answer text or invokes Ollama in this strict mode. The client also verifies every excerpt against its corresponding source text. Query expansion is disabled, including for legacy clients that send expand_query=true.
+Audits first apply the calibrated cosine cutoff and deterministic clause/evidence gates. Eligible evidence is then sent only to the loopback Ollama service using `llama3.2:3b`, temperature zero, a fixed seed and structured output. Accepted answers contain one concise assertion with immediate clickable `[Source N]` citations. A server-side validator rejects unknown citations, unsupported meaningful vocabulary, changed legal modality/negation/timing and invented entities or amounts. Query expansion remains disabled, including for legacy clients that send `expand_query=true`.
 
-Questions outside contract scope, missing evidence, distances at or above the calibrated cutoff, and missing/stale calibration return exactly:
+Questions outside contract scope, missing evidence, distances at or above the calibrated cutoff, missing/stale calibration, model abstention, unavailable Ollama, and invalid model output return exactly:
 
     I could not find an answer to this question in the provided documents.
 
-A finite relevance evaluation cannot prove perfect relevance for every possible question. Exact excerpts prevent generated claims; conservative scope and evidence coverage checks can abstain on valid paraphrases, compound questions, or unsupported languages. The complete chunk remains available in the inspector for legal context.
+A finite relevance evaluation cannot prove perfect relevance for every possible question, and deterministic validation cannot prove semantic entailment. Conservative scope, evidence coverage, citation, vocabulary and modality checks fail closed and can abstain on valid paraphrases, compound questions, or unsupported languages. The complete retrieved chunks remain available in the inspector for legal review.
 
 ## Local setup
 
@@ -56,6 +56,12 @@ Start the backend with the project virtual environment after setup, indexing, an
 
     .venv\Scripts\python.exe -B api.py
 
+For the complete production startup, including an Ollama/model check and an HTTP/2 Cloudflare quick tunnel, run:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\run_production.ps1
+
+Add `-DeployWorker` to rebuild the same-origin frontend, update the Worker's `MEETHAQ_API_ORIGIN` secret to the new tunnel, and deploy it. The script starts `ollama serve` when the local binary exists but its API is unavailable; it never downloads a missing model automatically and prints the exact `ollama pull` diagnostic instead.
+
 Calibration fixes clause-topic and negative-query splits before retrieving distances. The cutoff is selected on calibration cases, then frozen for held-out validation. Failed validation does not enable retrieval. Review and expand the independently labeled fixture to cover your actual contracts and questions.
 
 The local data/rag_calibration.report.json records raw distances, sample sizes, supported positive recall, false accepts and threshold selection. The installed data/rag_calibration.json is bound to corpus content/metadata, embedding settings, metric and gate/retrieval code. Reindexing or changing the policy requires recalibration. These artifacts and legal data are intentionally ignored by Git.
@@ -70,9 +76,9 @@ GET /api/telemetry reports the real persistent indexed_chunks and total_chunks, 
 
 ## Cloudflare
 
-For Cloudflare Pages, set VITE_API_URL to the current HTTPS tunnel origin in the build environment, then rebuild. Example value: https://your-tunnel.trycloudflare.com. /api and trailing slash suffixes are normalized. A tunnel URL change requires a rebuild because Vite environment variables are compiled into assets. public/_redirects supports direct /audit navigation without rewriting API failures into the SPA.
+For Cloudflare Pages, set VITE_API_URL to the current HTTPS tunnel origin in the build environment, then rebuild. Example value: https://your-tunnel.trycloudflare.com. /api and trailing slash suffixes are normalized. A tunnel URL change requires a rebuild because Vite environment variables are compiled into assets.
 
-For Workers, wrangler.toml and cloudflare/worker.ts serve dist assets and proxy /api requests. Set MEETHAQ_API_ORIGIN in the Workers deployment environment to the backend's HTTPS tunnel origin. Leave VITE_API_URL unset for this same-origin proxy configuration.
+For Workers, `wrangler.toml` and `cloudflare/worker.ts` serve `dist` assets and proxy `/api` requests. Set `MEETHAQ_API_ORIGIN` in the Worker environment to the backend's HTTPS tunnel origin. Leave `VITE_API_URL` unset for this same-origin proxy configuration. `run_production.ps1 -DeployWorker` automates the build, secret update and deployment.
 
 Remote sites never silently select local loopback. HTTPS sites reject HTTP API configuration. FastAPI permits anchored localhost, 127.0.0.1, pages.dev, workers.dev and trycloudflare.com origins; MEETHAQ_CORS_ORIGINS adds comma-separated explicit origins for custom domains. Cookies are unused and credentialed CORS is disabled.
 

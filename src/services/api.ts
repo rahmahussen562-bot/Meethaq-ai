@@ -34,7 +34,7 @@ export async function sendAuditQuery(query: string, expandQuery = false, signal?
   return parseAuditResponse(await request("/api/audit", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, expand_query: expandQuery }), signal,
-  }, 60000));
+  }, 180000));
 }
 export const runAuditQuery = sendAuditQuery;
 export async function fetchTelemetry(signal?: AbortSignal): Promise<TelemetryResponse> {

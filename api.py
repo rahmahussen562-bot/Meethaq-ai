@@ -128,8 +128,11 @@ def get_telemetry(rag: RAGPipeline = Depends(get_rag)):
 @app.get("/api/health")
 def get_health(rag: RAGPipeline = Depends(get_rag)):
     telemetry = get_telemetry(rag)
-    ready = telemetry["indexed_chunks"] > 0 and telemetry["calibration_status"] == "calibrated"
-    return {**telemetry, "status": "ready" if ready else "not_ready", "ready": ready}
+    llm = rag.llm_health()
+    ready = (telemetry["indexed_chunks"] > 0
+             and telemetry["calibration_status"] == "calibrated"
+             and llm["llm_ready"] is True)
+    return {**telemetry, **llm, "status": "ready" if ready else "not_ready", "ready": ready}
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ export interface TelemetryResponse {
   embed_model?: string;
   rerank_model?: string;
   llm_model?: string;
+  llm_status?: string;
+  llm_invoked?: boolean;
   answer_mode?: string;
   calibration_status?: string;
   status?: string;
@@ -72,9 +74,10 @@ export function parseTelemetry(value: unknown): TelemetryResponse {
   if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw new ApiError("The API did not return a valid indexed chunk count.", "protocol");
   if (data.indexed_chunks !== undefined && data.total_chunks !== undefined && data.indexed_chunks !== data.total_chunks) throw new ApiError("The API returned inconsistent chunk counts.", "protocol");
   const telemetry: TelemetryResponse = { indexed_chunks: count, total_chunks: count };
-  for (const key of ["collection", "embed_model", "rerank_model", "llm_model", "status", "answer_mode", "calibration_status"] as const) {
+  for (const key of ["collection", "embed_model", "rerank_model", "llm_model", "llm_status", "status", "answer_mode", "calibration_status"] as const) {
     if (typeof data[key] === "string") telemetry[key] = data[key];
   }
+  if (typeof data.llm_invoked === "boolean") telemetry.llm_invoked = data.llm_invoked;
   return telemetry;
 }
 export function parseAuditResponse(value: unknown): AuditResponse {
@@ -83,6 +86,7 @@ export function parseAuditResponse(value: unknown): AuditResponse {
   const stats = parseTelemetry(data.stats);
   if (data.answer === NO_ANSWER) {
     if (data.sources.length) throw new ApiError("An abstained answer cannot include citations.", "protocol");
+    if (stats.llm_invoked === true) throw new ApiError("An abstention cannot claim successful LLM synthesis.", "protocol");
     return { answer: data.answer, sources: [], stats };
   }
   const identities = new Set<string>();
@@ -95,12 +99,16 @@ export function parseAuditResponse(value: unknown): AuditResponse {
     return source as unknown as SourceItem;
   });
   if (!sources.length) throw new ApiError("The API returned an answer without sources.", "protocol");
+  if (stats.llm_invoked !== true) throw new ApiError("A synthesized answer must report successful LLM invocation.", "protocol");
   const cited = new Set<string>();
-  for (const paragraph of data.answer.trim().split(/\n\s*\n/)) {
-    const match = paragraph.match(/^([\s\S]+?) (\[Source [1-9]\d*\])$/);
-    const source = match && sources.find((item) => item.label === match[2]);
-    if (!match || !source || /\[Source\b/i.test(match[1]) || !source.text.includes(match[1])) throw new ApiError("The API returned text that is not an exact cited document excerpt.", "protocol");
-    cited.add(source.label);
+  for (const paragraph of data.answer.trim().split(/\n+/).filter(Boolean)) {
+    const match = paragraph.match(/^([\s\S]+?)\s*((?:\[Source [1-9]\d*\]\s*)+)$/);
+    const labels = match?.[2].match(/\[Source [1-9]\d*\]/g) ?? [];
+    if (!match || !match[1].trim() || /\[Source\b/i.test(match[1]) || !labels.length) throw new ApiError("Every synthesized assertion must end with a source citation.", "protocol");
+    for (const label of labels) {
+      if (!sources.some((item) => item.label === label)) throw new ApiError("The answer cites an unknown source.", "protocol");
+      cited.add(label);
+    }
   }
   if (cited.size !== sources.length) throw new ApiError("The API returned sources that are not cited in the answer.", "protocol");
   return { answer: data.answer, sources, stats };

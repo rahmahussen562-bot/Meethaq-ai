@@ -1,4 +1,4 @@
-"""Deterministic evidence selection; no model can add factual text."""
+"""Deterministic evidence selection for fail-closed grounded synthesis."""
 
 from __future__ import annotations
 
@@ -376,7 +376,7 @@ def policy_signature(top_k: int, max_sources: int) -> dict:
         "vocabulary_sha256": hashlib.sha256(vocabulary.encode()).hexdigest(),
         "metric": "cosine", "top_k": top_k, "max_sources": max_sources,
         "max_evidence_sentences": MAX_EVIDENCE_SENTENCES,
-        "annotated_evidence_truncation": "never", "answer_mode": "extractive",
+        "annotated_evidence_truncation": "never", "answer_mode": "grounded_llm_synthesis",
     }
 
 

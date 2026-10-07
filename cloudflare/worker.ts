@@ -66,7 +66,7 @@ export default {
         headers,
         body: request.method === "POST" ? request.body : undefined,
         redirect: "manual",
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(180_000),
       })
       if (upstream.status >= 300 && upstream.status < 400) {
         await upstream.body?.cancel()

@@ -6,7 +6,9 @@ compatibility_date = "2026-10-06"
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api", "/api/*"]
+# The Worker delegates every non-/api request to ASSETS, so running it first is
+# equivalent to a route list and remains compatible with Wrangler 3 and 4.
+run_worker_first = true
 
 # Configure MEETHAQ_API_ORIGIN in the Workers dashboard or deployment environment
 # as the HTTPS origin of your Cloudflare Tunnel. Never use a local loopback URL.

@@ -28,6 +28,7 @@ data/CUAD_v1*
 .env.local
 *.log
 logs/
+.runtime/
 *-debug.log*
 *.exe
 

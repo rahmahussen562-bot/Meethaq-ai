@@ -18,6 +18,10 @@ class FakePipeline:
     def audit(self, question, expand_query=False):
         return {"answer": ABSTENTION, "sources": [], "stats": self.stats()}
 
+    def llm_health(self):
+        return {"llm_ready": True, "llm_status": "ready", "llm_model": "llama3.2:3b",
+                "ollama_url": "http://127.0.0.1:11434"}
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
@@ -77,6 +81,17 @@ class ApiTests(unittest.TestCase):
             response = self.client.get("/api/health")
             self.assertTrue(response.json()["ready"])
             self.assertEqual(response.json()["status"], "ready")
+
+    def test_health_fails_closed_when_ollama_is_unavailable(self):
+        with mock.patch.object(self.pipeline, "stats", return_value={
+            **self.pipeline.stats(), "indexed_chunks": 12, "calibration_status": "calibrated"
+        }), mock.patch.object(self.pipeline, "llm_health", return_value={
+            "llm_ready": False, "llm_status": "unavailable", "llm_model": "llama3.2:3b",
+            "ollama_url": "http://127.0.0.1:11434", "llm_diagnostic": "model missing",
+        }):
+            response = self.client.get("/api/health")
+            self.assertFalse(response.json()["ready"])
+            self.assertEqual(response.json()["llm_status"], "unavailable")
 
     def test_invalid_inputs_are_rejected(self):
         for query, status in [("", 422), ("  ", 400), ("x" * 2001, 422)]:

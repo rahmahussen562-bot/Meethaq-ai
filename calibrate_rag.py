@@ -301,8 +301,9 @@ def calibrate(pipeline: RAGPipeline, cases_path: Path, output: Path,
         "min_validation_recall": min_validation_recall, "validation_passed": passed,
         "validation_evaluated": True, "calibration_diagnostics": diagnostics,
         "calibration_metrics": training_metrics, "validation_metrics": validation_metrics,
-        "limitations": "Finite local fixture only. Exact quotations prevent generated factual claims; "
-                       "relevance can still have false negatives and requires representative reviewed labels.",
+        "limitations": "Finite local fixture only. Grounded synthesis is guarded by citation, vocabulary "
+                       "and modality validation but cannot prove semantic entailment; relevance can still "
+                       "have false negatives and requires representative reviewed labels.",
     }
     if before != pipeline.vector_store.corpus_fingerprint():
         raise RuntimeError("Corpus changed before installing calibration; no threshold installed")

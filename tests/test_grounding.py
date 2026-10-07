@@ -15,6 +15,10 @@ from grounding import (
     ABSTENTION, eligible_chunks, evidence_sentences, load_calibration,
     policy_signature, query_terms, render_evidence,
 )
+from llm_synthesis import (
+    SynthesisRejected, SynthesisResult, attach_deterministic_citations,
+    validate_synthesis,
+)
 from rag_pipeline import RAGPipeline, TextChunker
 
 
@@ -49,6 +53,23 @@ class FakeStore:
 
     def replace_chunks(self, source, chunks):
         self.replace_calls.append((source, chunks))
+
+
+class FakeSynthesizer:
+    def __init__(self, answer="Either party may terminate on 30 days written notice. [Source 1]"):
+        self.answer = answer
+        self.calls = []
+        self.last_status = "ready"
+
+    def health(self):
+        return {"llm_ready": True, "llm_status": "ready", "llm_model": "test-model",
+                "ollama_url": "http://127.0.0.1:11434"}
+
+    def synthesize(self, question, sources):
+        self.calls.append((question, sources))
+        if self.answer is None:
+            return None
+        return SynthesisResult(answer=self.answer, cited_labels=("[Source 1]",))
 
 
 def calibration_artifact(store, **changes):
@@ -127,6 +148,56 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual([source["chunk_id"] for source in first[1]], ["a", "z"])
         self.assertEqual(render_evidence([]), (ABSTENTION, []))
 
+    def test_synthesis_validator_rejects_missing_support_and_bad_citations(self):
+        sources = [{"label": "[Source 1]", "text":
+                    "Either party may terminate on 30 days written notice."}]
+        accepted = validate_synthesis(
+            "Either party may terminate on 30 days written notice.[Source 1]", sources
+        )
+        self.assertEqual(
+            accepted.answer,
+            "Either party may terminate on 30 days written notice. [Source 1]",
+        )
+        canonicalized = validate_synthesis(
+            "Either party may terminate on 30 days written notice [Source 1].", sources
+        )
+        self.assertEqual(
+            canonicalized.answer,
+            "Either party may terminate on 30 days written notice. [Source 1]",
+        )
+        for answer in [
+            "Either party must terminate on 30 days written notice. [Source 1]",
+            "Either party may terminate on seven days written notice. [Source 1]",
+            "Either party may terminate on 30 days written notice. [Source 2]",
+            "Either party may terminate on 30 days written notice.",
+            "Either party may terminate. Another condition applies. [Source 1]",
+        ]:
+            with self.subTest(answer=answer), self.assertRaises(SynthesisRejected):
+                validate_synthesis(answer, sources)
+
+    def test_missing_citations_are_attached_only_with_complete_support(self):
+        sources = [
+            {"label": "[Source 1]", "text":
+             "Either party may terminate for convenience upon written notice."},
+            {"label": "[Source 2]", "text":
+             "Either party may terminate without cause upon 30 days written notice."},
+        ]
+        repaired = attach_deterministic_citations(
+            "Either party may terminate for convenience or without cause upon 30 days written notice.",
+            sources,
+        )
+        self.assertEqual(
+            repaired,
+            "Either party may terminate for convenience or without cause upon 30 days written notice. "
+            "[Source 1] [Source 2]",
+        )
+        self.assertEqual(
+            attach_deterministic_citations(
+                "Either party must terminate without cause upon 7 days written notice.", sources
+            ),
+            "Either party must terminate without cause upon 7 days written notice.",
+        )
+
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
@@ -134,22 +205,33 @@ class PipelineTests(unittest.TestCase):
         self.path = Path(self.directory.name) / "calibration.json"
         self.store = FakeStore()
         self.path.write_text(json.dumps(calibration_artifact(self.store)), encoding="utf-8")
-        self.pipeline = RAGPipeline(vector_store=self.store, calibration_path=self.path)
+        self.synthesizer = FakeSynthesizer()
+        self.pipeline = RAGPipeline(
+            vector_store=self.store, calibration_path=self.path,
+            synthesizer=self.synthesizer,
+        )
 
     def tearDown(self):
         self.directory.cleanup()
 
-    def test_llm_expansion_and_generation_are_never_invoked(self):
-        forbidden_llm = mock.Mock()
-        forbidden_llm.chat.side_effect = AssertionError("LLM must not be invoked")
-        with mock.patch.dict("sys.modules", {"ollama": forbidden_llm}):
-            first = self.pipeline.audit("What termination notice applies?", expand_query=True)
-            second = self.pipeline.audit("What termination notice applies?", expand_query=True)
-            self.assertEqual(first, second)
-            self.assertFalse(first["stats"]["llm_invoked"])
-            self.assertEqual(first["stats"]["query_expansion"], "disabled")
-            self.assertIn("[Source 1]", first["answer"])
-            forbidden_llm.chat.assert_not_called()
+    def test_grounded_synthesis_is_invoked_after_evidence_selection(self):
+        first = self.pipeline.audit("What termination notice applies?", expand_query=True)
+        second = self.pipeline.audit("What termination notice applies?", expand_query=True)
+        self.assertEqual(first, second)
+        self.assertTrue(first["stats"]["llm_invoked"])
+        self.assertEqual(first["stats"]["query_expansion"], "disabled")
+        self.assertEqual(first["stats"]["answer_mode"], "grounded_llm_synthesis")
+        self.assertIn("[Source 1]", first["answer"])
+        self.assertEqual(len(self.synthesizer.calls), 2)
+
+    def test_only_cited_retrieved_sources_are_returned(self):
+        self.store.chunks = [
+            candidate("Either party may terminate on 30 days written notice."),
+            candidate("Either party may terminate on 60 days written notice.", "chunk-b", 0.3),
+        ]
+        result = self.pipeline.audit("What termination notice applies?")
+        self.assertTrue(result["stats"]["llm_invoked"])
+        self.assertEqual([source["label"] for source in result["sources"]], ["[Source 1]"])
 
     def test_irrelevant_query_skips_retrieval_and_llm(self):
         result = self.pipeline.audit("Who won the football world cup?", expand_query=True)
@@ -157,6 +239,15 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result["sources"], [])
         self.assertEqual(self.store.query_calls, 0)
         self.assertEqual(result["stats"]["abstention_reason"], "out_of_scope")
+        self.assertEqual(self.synthesizer.calls, [])
+
+    def test_model_abstention_discards_retrieved_sources(self):
+        self.synthesizer.answer = None
+        result = self.pipeline.audit("What termination notice applies?")
+        self.assertEqual(result["answer"], ABSTENTION)
+        self.assertEqual(result["sources"], [])
+        self.assertFalse(result["stats"]["llm_invoked"])
+        self.assertEqual(result["stats"]["abstention_reason"], "llm_abstained")
 
     def test_missing_or_stale_calibration_skips_embedding(self):
         self.path.unlink()
@@ -190,7 +281,8 @@ class PipelineTests(unittest.TestCase):
 
     def test_empty_index_truthful_stats_and_configured_llm(self):
         self.store.chunks = []
-        pipeline = RAGPipeline(vector_store=self.store, calibration_path=self.path, llm_model="configured-model")
+        pipeline = RAGPipeline(vector_store=self.store, calibration_path=self.path,
+                               llm_model="configured-model", synthesizer=FakeSynthesizer())
         result = pipeline.audit("What termination notice applies?")
         self.assertEqual(result["answer"], ABSTENTION)
         self.assertEqual(result["stats"]["indexed_chunks"], 0)
