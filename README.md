@@ -56,7 +56,7 @@ Start the backend with the project virtual environment after setup, indexing, an
 
     .venv\Scripts\python.exe -B api.py
 
-For the complete production startup, including an Ollama/model check and an HTTP/2 Cloudflare quick tunnel, run:
+For the complete production startup, including an Ollama/model check, model warm-up with a 24-hour keep-alive, and an HTTP/2 Cloudflare quick tunnel, run:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\run_production.ps1
 

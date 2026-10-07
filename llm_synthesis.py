@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_TIMEOUT_SECONDS = 180.0
+DEFAULT_KEEP_ALIVE = "24h"
 MAX_SYNTHESIS_CHARACTERS = 4000
 
 _CITATION = re.compile(r"\[Source ([1-9]\d*)\]")
@@ -161,6 +162,9 @@ class OllamaSynthesizer:
         if not 1 <= configured_timeout <= 600:
             raise ValueError("MEETHAQ_OLLAMA_TIMEOUT_SECONDS must be between 1 and 600")
         self.timeout_seconds = configured_timeout
+        self.keep_alive = os.getenv("MEETHAQ_OLLAMA_KEEP_ALIVE", DEFAULT_KEEP_ALIVE).strip()
+        if not re.fullmatch(r"(?:-1|0|[1-9]\d*(?:ms|s|m|h))", self.keep_alive):
+            raise ValueError("MEETHAQ_OLLAMA_KEEP_ALIVE must be -1, 0, or a positive duration")
         self.last_status = "unchecked"
         self.last_error: str | None = None
         self.last_metrics: dict = {}
@@ -248,7 +252,7 @@ class OllamaSynthesizer:
                 "top_p": 0.1,
                 "num_predict": 80,
             },
-            "keep_alive": "10m",
+            "keep_alive": self.keep_alive,
         })
         self.last_metrics = {
             key: response.get(key) for key in (

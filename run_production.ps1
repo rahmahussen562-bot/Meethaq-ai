@@ -64,6 +64,23 @@ if ($models -notcontains $OllamaModel) {
     throw "Ollama is running but model '$OllamaModel' is missing. Run: ollama pull $OllamaModel"
 }
 
+# Pay the model load cost before exposing the tunnel. Keeping the 3B model
+# resident avoids a cold first audit exceeding a quick-tunnel edge timeout.
+$warmupBody = @{
+    model = $OllamaModel
+    stream = $false
+    messages = @(@{ role = "user"; content = "Reply with READY." })
+    options = @{ temperature = 0; seed = 0; num_predict = 4 }
+    keep_alive = "24h"
+} | ConvertTo-Json -Depth 6
+try {
+    Invoke-RestMethod -Uri "$ollamaOrigin/api/chat" -Method Post `
+        -ContentType "application/json" -Body $warmupBody `
+        -TimeoutSec $StartupTimeoutSeconds | Out-Null
+} catch {
+    throw "Ollama model warm-up failed: $($_.Exception.Message)"
+}
+
 function Get-BackendHealth {
     try {
         return Invoke-RestMethod -Uri "$backendOrigin/api/health" -TimeoutSec 15
@@ -160,6 +177,7 @@ Write-Output "Backend: $backendOrigin"
 Write-Output "Backend tunnel: $tunnelOrigin"
 Write-Output "Indexed chunks: $($health.indexed_chunks)"
 Write-Output "Ollama: $($health.llm_model) ($($health.llm_status))"
+Write-Output "Ollama keep-alive: 24h (warm)"
 Write-Output "Runtime metadata: $runtimePath"
 if ($DeployWorker) {
     Write-Output "Worker: https://$WorkerName.rahmahussen562.workers.dev"

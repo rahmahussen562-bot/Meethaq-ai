@@ -84,6 +84,12 @@ def calibration_artifact(store, **changes):
 
 
 class GroundingTests(unittest.TestCase):
+    def test_invalid_ollama_keep_alive_fails_configuration(self):
+        with mock.patch.dict("os.environ", {"MEETHAQ_OLLAMA_KEEP_ALIVE": "forever"}):
+            from llm_synthesis import OllamaSynthesizer
+            with self.assertRaises(ValueError):
+                OllamaSynthesizer("test-model")
+
     def test_strict_unrounded_distance_boundary(self):
         rejected = [candidate(distance=0.45), candidate(distance=0.4500000001),
                     candidate(distance=math.nan), candidate(distance=math.inf),
