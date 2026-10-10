@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "chunk_size": 6291456,
+  "assets": [
+    {
+      "target": ".cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx/model.onnx",
+      "size": 90387606,
+      "sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+      "parts": [
+        {
+          "path": "deployment_assets/chunks/onnx-model-0000.part",
+          "size": 6291456,
+          "sha256": "effbc68126a0e519266819a1ccc6e0ff348fe0df96b4d66fbb0b0d8b8b593f48"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0001.part",
+          "size": 6291456,
+          "sha256": "66b00db43f2b1de1c5bb23e3c2bb13345adb1ead7397e1993ac443a1239744e2"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0002.part",
+          "size": 6291456,
+          "sha256": "c7ef089ec98d4e5723eb123449b7191a8fc58f43456dba9cd53ed554f07cb02a"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0003.part",
+          "size": 6291456,
+          "sha256": "65b5822c629d708900071d7dd9b1d7fd5e07bb76fe869ff370e73625d995759d"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0004.part",
+          "size": 6291456,
+          "sha256": "18875bb39705e4b46745dbbba08f9588ff527133299d64a6ac912ff575676265"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0005.part",
+          "size": 6291456,
+          "sha256": "4663f1cc5585b00f0e3cdd7aa16fde7e4bc169fb07d9e71d3c5c4847cb12f109"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0006.part",
+          "size": 6291456,
+          "sha256": "6750041a601c6bdc5c4f3164ca312fa143494342de977e95b9c3bfdb45bca616"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0007.part",
+          "size": 6291456,
+          "sha256": "8121051c643bcd7d5537475855354b68f08831093b6292dfcc512d8f0b930510"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0008.part",
+          "size": 6291456,
+          "sha256": "c4de1f7fbc4dfb2f445a3295cd9a9329efd487b11c1e06f243f4314062c9afe9"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0009.part",
+          "size": 6291456,
+          "sha256": "8b158c1bc9bb1a07623f78c7fd0015e4b696d89d70aa3ce1f7a9c603971883da"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0010.part",
+          "size": 6291456,
+          "sha256": "3e56ea8d116aaed8209b0215bb8b6ac549c85b97dcaae2c3c78e59d1fb0c38fa"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0011.part",
+          "size": 6291456,
+          "sha256": "28c948eed66b4ab4edc41749d2bf1008a0475d99798127ba383a49c81bc071e2"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0012.part",
+          "size": 6291456,
+          "sha256": "0be19f772dbd64f2be2d53d0241ef0bb3fddfae636832523c041d9887d61ddc4"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0013.part",
+          "size": 6291456,
+          "sha256": "043893e494f5b8861217af4f15a40225e9293cabe41af85af69bb9369cae3acf"
+        },
+        {
+          "path": "deployment_assets/chunks/onnx-model-0014.part",
+          "size": 2307222,
+          "sha256": "ec412aa96e5d6f8295b0378225f27367f5ab9740bad34b368b783ca1346c7eb4"
+        }
+      ]
+    },
+    {
+      "target": "chroma_db/chroma.sqlite3",
+      "size": 23908352,
+      "sha256": "f89e7115741d645b314f2be14ab046151c75a5c6c9f4226748447d85cd41b192",
+      "parts": [
+        {
+          "path": "deployment_assets/chunks/chroma-sqlite-0000.part",
+          "size": 6291456,
+          "sha256": "4d2a666c10a37aa55b81bb66f94ddf82146bc0758933fc320ee58013977f4f66"
+        },
+        {
+          "path": "deployment_assets/chunks/chroma-sqlite-0001.part",
+          "size": 6291456,
+          "sha256": "6485d41aa28cca49ee032b56273f505a491092654d9481760da4ef961ab925b3"
+        },
+        {
+          "path": "deployment_assets/chunks/chroma-sqlite-0002.part",
+          "size": 6291456,
+          "sha256": "7e74fa73161bd6276c4be14e3de7b5d5ae9f159ed6a89d1e73a4332e2188fd7a"
+        },
+        {
+          "path": "deployment_assets/chunks/chroma-sqlite-0003.part",
+          "size": 5033984,
+          "sha256": "97431c14b5db9a4efc848666748c00a6bced5459784a5f208ff85cb241dc3622"
+        }
+      ]
+    }
+  ]
+}

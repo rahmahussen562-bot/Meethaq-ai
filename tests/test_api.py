@@ -65,6 +65,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(telemetry.status_code, 200)
         self.assertEqual(telemetry.json()["total_chunks"], 0)
         self.assertEqual(telemetry.json()["indexed_chunks"], 0)
+        self.assertTrue(telemetry.json()["llm_ready"])
         response = self.client.post("/api/audit", json={"query": "What governing law applies?"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["answer"], ABSTENTION)
@@ -104,6 +105,17 @@ class ApiTests(unittest.TestCase):
                 response = self.client.get("/api/telemetry")
             self.assertEqual(response.status_code, 503)
             self.assertNotIn("total_chunks", response.json())
+
+    def test_packaged_index_count_mismatch_fails_startup(self):
+        pipeline = mock.Mock()
+        pipeline.vector_store.collection.count.return_value = 12
+        with mock.patch.object(api, "_pipeline", None), \
+                mock.patch.object(api, "RAGPipeline", return_value=pipeline), \
+                mock.patch.dict("os.environ", {"MEETHAQ_EXPECTED_CHUNKS": "1863"}):
+            with self.assertRaises(Exception) as raised:
+                api.get_rag()
+        self.assertEqual(raised.exception.status_code, 503)
+        pipeline.close.assert_called_once()
 
     def test_internal_retrieval_value_error_is_logged_as_backend_failure(self):
         with mock.patch.object(self.pipeline, "audit", side_effect=ValueError("invalid stored embeddings")):

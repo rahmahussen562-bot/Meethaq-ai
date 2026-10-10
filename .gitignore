@@ -15,12 +15,29 @@ build/
 vite.config.*.timestamp-*
 *.tsbuildinfo
 
-# ChromaDB & Heavy Local Data
-chroma_db/
-data/
+# ChromaDB & deployable runtime data
+chroma_db/*
+!chroma_db/chroma.sqlite3
+!chroma_db/*/
+!chroma_db/*/**
+chroma_db/.meethaq.lock
+data/*
+!data/rag_calibration.json
 data/CUAD_v1*
 *.jsonl
-.cache/
+.cache/*
+!.cache/chroma/
+.cache/chroma/*
+!.cache/chroma/onnx_models/
+.cache/chroma/onnx_models/*
+!.cache/chroma/onnx_models/all-MiniLM-L6-v2/
+.cache/chroma/onnx_models/all-MiniLM-L6-v2/*
+!.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx/
+!.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx/**
+
+# Reassembled at startup from deployment_assets/chunks.
+.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx/model.onnx
+chroma_db/chroma.sqlite3
 
 # Environment & Secrets
 .env

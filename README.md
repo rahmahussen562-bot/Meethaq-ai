@@ -1,10 +1,22 @@
+---
+title: Meethaq AI Backend
+emoji: ⚖️
+colorFrom: yellow
+colorTo: gray
+sdk: gradio
+sdk_version: 6.29.1
+python_version: 3.11
+app_file: app.py
+pinned: false
+---
+
 # Meethaq AI
 
 React 19/Vite client and a local FastAPI contract evidence service. ChromaDB 1.5.9 uses its Python SegmentAPI with chroma-hnswlib 0.7.6 to persist CPU all-MiniLM-L6-v2 ONNX embeddings in the project-root chroma_db directory. The default collection is meethaq_contracts. Retrieval computes exact cosine distances over stored vectors. The Python SegmentAPI is used consistently with explicit persistence verification. Native index crashes on this Windows installation were traced to the older system MSVCP140.dll 14.31 runtime; the optional project runtime below supplies verified 14.44 DLLs before native imports.
 
 ## Answer contract
 
-Audits first apply the calibrated cosine cutoff and deterministic clause/evidence gates. Eligible evidence is then sent only to the loopback Ollama service using `llama3.2:3b`, temperature zero, a fixed seed and structured output. Accepted answers contain one concise assertion with immediate clickable `[Source N]` citations. A server-side validator rejects unknown citations, unsupported meaningful vocabulary, changed legal modality/negation/timing and invented entities or amounts. Query expansion remains disabled, including for legacy clients that send `expand_query=true`.
+Audits first apply the calibrated cosine cutoff and deterministic clause/evidence gates. Eligible evidence is sent to the selected synthesis provider: local Ollama, Groq, or another OpenAI-compatible endpoint. Cloud deployment uses Groq `openai/gpt-oss-20b`; local deployment can continue to use Ollama `llama3.2:3b`. Both paths request temperature zero and structured JSON. Accepted answers contain one concise assertion with immediate clickable `[Source N]` citations. A server-side validator rejects unknown citations, unsupported meaningful vocabulary, changed legal modality/negation/timing and invented entities or amounts. Query expansion remains disabled, including for legacy clients that send `expand_query=true`.
 
 Questions outside contract scope, missing evidence, distances at or above the calibrated cutoff, missing/stale calibration, model abstention, unavailable Ollama, and invalid model output return exactly:
 
@@ -76,9 +88,9 @@ GET /api/telemetry reports the real persistent indexed_chunks and total_chunks, 
 
 ## Cloudflare
 
-For Cloudflare Pages, set VITE_API_URL to the current HTTPS tunnel origin in the build environment, then rebuild. Example value: https://your-tunnel.trycloudflare.com. /api and trailing slash suffixes are normalized. A tunnel URL change requires a rebuild because Vite environment variables are compiled into assets.
+For the deployed Worker, leave `VITE_API_URL` unset so the browser uses same-origin `/api` requests. For a separately hosted frontend, set it to the persistent HTTPS backend origin before building. `/api` and trailing slash suffixes are normalized.
 
-For Workers, `wrangler.toml` and `cloudflare/worker.ts` serve `dist` assets and proxy `/api` requests. Set `MEETHAQ_API_ORIGIN` in the Worker environment to the backend's HTTPS tunnel origin. Leave `VITE_API_URL` unset for this same-origin proxy configuration. `run_production.ps1 -DeployWorker` automates the build, secret update and deployment.
+For Workers, `wrangler.toml` and `cloudflare/worker.ts` serve `dist` assets and proxy `/api` requests. Set `MEETHAQ_API_ORIGIN` in the Worker environment to the persistent HTTPS Docker backend. See [CLOUD_DEPLOYMENT.md](CLOUD_DEPLOYMENT.md) for the Groq key, Hugging Face/Render push, Worker update, verification commands, and free-tier availability limits. `run_production.ps1` remains available for temporary local/tunnel operation.
 
 Remote sites never silently select local loopback. HTTPS sites reject HTTP API configuration. FastAPI permits anchored localhost, 127.0.0.1, pages.dev, workers.dev and trycloudflare.com origins; MEETHAQ_CORS_ORIGINS adds comma-separated explicit origins for custom domains. Cookies are unused and credentialed CORS is disabled.
 

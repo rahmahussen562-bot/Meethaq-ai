@@ -13,7 +13,7 @@ function errorResponse(status: number, detail: string): Response {
   return Response.json({ detail }, { status, headers: { "Cache-Control": "no-store" } })
 }
 
-function tunnelOrigin(value: string | undefined): URL | null {
+function backendOrigin(value: string | undefined): URL | null {
   if (!value?.trim()) return null
   try {
     const origin = new URL(value.trim())
@@ -47,12 +47,12 @@ export default {
       )
     }
 
-    const origin = tunnelOrigin(env.MEETHAQ_API_ORIGIN)
+    const origin = backendOrigin(env.MEETHAQ_API_ORIGIN)
     if (!origin) {
-      return errorResponse(503, "Set MEETHAQ_API_ORIGIN to a valid HTTPS tunnel origin.")
+      return errorResponse(503, "Set MEETHAQ_API_ORIGIN to the persistent HTTPS backend origin.")
     }
     if (origin.origin === url.origin) {
-      return errorResponse(503, "MEETHAQ_API_ORIGIN must point to the backend tunnel.")
+      return errorResponse(503, "MEETHAQ_API_ORIGIN must point to the cloud backend.")
     }
 
     const target = new URL(url.pathname + url.search, origin)
@@ -70,18 +70,18 @@ export default {
       })
       if (upstream.status >= 300 && upstream.status < 400) {
         await upstream.body?.cancel()
-        return errorResponse(502, "The backend tunnel returned a redirect instead of an API response.")
+        return errorResponse(502, "The cloud backend returned a redirect instead of an API response.")
       }
       if (!/\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(upstream.headers.get("Content-Type") || "")) {
         await upstream.body?.cancel()
-        return errorResponse(502, "The backend tunnel did not return an API JSON response.")
+        return errorResponse(502, "The cloud backend did not return an API JSON response.")
       }
       const responseHeaders = new Headers(upstream.headers)
       responseHeaders.set("Cache-Control", "no-store")
       responseHeaders.delete("Set-Cookie")
       return new Response(upstream.body, { status: upstream.status, headers: responseHeaders })
     } catch {
-      return errorResponse(502, "The backend tunnel could not be reached or timed out.")
+      return errorResponse(502, "The cloud backend could not be reached or timed out.")
     }
   },
 }

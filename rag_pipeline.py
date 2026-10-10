@@ -1,4 +1,4 @@
-"""Local RAG with calibrated retrieval and validated Ollama synthesis."""
+"""Calibrated retrieval with validated local or cloud LLM synthesis."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from grounding import (
     ABSTENTION, MAX_QUESTION_LENGTH, eligible_chunks, in_contract_scope,
     load_calibration, normalize_question, policy_signature, render_evidence,
 )
-from llm_synthesis import OllamaSynthesizer, OllamaUnavailable, SynthesisRejected
+from llm_synthesis import LLMUnavailable, SynthesisRejected, build_synthesizer
 
 EMBED_MODEL_NAME = "ONNX-all-MiniLM-L6-v2 (Native)"
 RERANK_MODEL_NAME = "Exact cosine similarity"
@@ -132,8 +132,8 @@ class RAGPipeline:
         self.query_handler = QueryHandler()
         self.assembler = ContextAssembler()
         self.max_sources = rerank_top_n
-        self.llm_model = llm_model
-        self.synthesizer = synthesizer or OllamaSynthesizer(model=llm_model)
+        self.synthesizer = synthesizer or build_synthesizer(llm_model)
+        self.llm_model = getattr(self.synthesizer, "model", llm_model)
         self.policy = policy_signature(retrieval_top_k, rerank_top_n)
         selected_path = Path(calibration_path or os.getenv(
             "MEETHAQ_CALIBRATION_PATH", "data/rag_calibration.json"
@@ -235,7 +235,8 @@ class RAGPipeline:
             "corpus_fingerprint": fingerprint,
             "embedding_signature": self.vector_store.embedding_signature,
             "embed_model": EMBED_MODEL_NAME, "rerank_model": RERANK_MODEL_NAME,
-            "llm_model": self.llm_model, "answer_mode": "grounded_llm_synthesis",
+            "llm_model": getattr(self.synthesizer, "model", self.llm_model),
+            "answer_mode": "grounded_llm_synthesis",
             "llm_invoked": False, "calibration_status": status,
             "max_cosine_distance": threshold,
             "llm_status": getattr(self.synthesizer, "last_status", "unchecked"),
@@ -278,13 +279,13 @@ class RAGPipeline:
             return response
         try:
             synthesis = self.synthesizer.synthesize(normalized, sources)
-        except OllamaUnavailable as exc:
+        except LLMUnavailable as exc:
             logger.error("Grounded synthesis unavailable: %s", exc)
             stats["llm_status"] = "unavailable"
             stats["abstention_reason"] = "llm_unavailable"
             return response
         except SynthesisRejected as exc:
-            logger.warning("Rejected ungrounded Ollama output: %s", exc)
+            logger.warning("Rejected ungrounded LLM output: %s", exc)
             stats["llm_status"] = "invalid_output"
             stats["abstention_reason"] = "invalid_llm_output"
             return response

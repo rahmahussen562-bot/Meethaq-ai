@@ -281,7 +281,9 @@ class VectorStore:
                 "storage_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "tokenizer_sha256": hashlib.sha256((MODEL_DIR / "tokenizer.json").read_bytes()).hexdigest() if (MODEL_DIR / "tokenizer.json").is_file() else "missing",
                 "query_algorithm": "exact-cosine-canonical-query-v2", "runtime_versions": versions,
-                "native_runtime": self.native_runtime_signature,
+                # Calibration follows the model and algorithm, not the host OS runtime.
+                # This keeps an identical ONNX index valid on Windows and Linux containers.
+                "execution_provider": "CPUExecutionProvider",
                 "native_runtime_source_sha256": hashlib.sha256((PROJECT_DIR / "native_runtime.py").read_bytes()).hexdigest(),
             }
         return self._signature

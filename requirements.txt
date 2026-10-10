@@ -1,10 +1,9 @@
-# Local vector search and CPU embeddings; no PyTorch or remote inference.
+# Local vector search and CPU embeddings; no PyTorch required.
 chromadb==1.5.9
 chroma-hnswlib==0.7.6
 onnxruntime==1.20.1
 numpy==1.26.4
 tokenizers==0.23.2
-ollama>=0.6,<1
 
 # Document loading and explicit online CUAD download (--download only).
 pymupdf>=1.24,<2
@@ -13,5 +12,6 @@ tqdm>=4.66,<5
 
 # Local API.
 fastapi>=0.115,<1
-uvicorn>=0.32,<1
+uvicorn[standard]>=0.32,<1
 pydantic>=2,<3
+gradio==6.29.1

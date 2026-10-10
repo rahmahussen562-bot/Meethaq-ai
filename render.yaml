@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: meethaq-ai-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: MEETHAQ_LLM_PROVIDER
+        value: groq
+      - key: MEETHAQ_LLM_MODEL
+        value: openai/gpt-oss-20b
+      - key: MEETHAQ_CORS_ORIGINS
+        value: https://meethaq-ai.rahmahussen562.workers.dev
+      - key: GROQ_API_KEY
+        sync: false

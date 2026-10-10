@@ -24,7 +24,7 @@ async function request(path: string, init: RequestInit, timeoutMs: number): Prom
     if (externalSignal?.aborted) throw new DOMException("Request cancelled", "AbortError");
     if (error instanceof ApiError) throw error;
     if (timedOut) throw new ApiError("The backend request timed out. Check indexing activity and backend logs.", "timeout");
-    throw new ApiError("Could not reach the configured API at " + base + ". Check the backend, tunnel, and CORS settings.", "network");
+    throw new ApiError("Could not reach the configured API at " + base + ". Check the cloud backend and Worker proxy settings.", "network");
   } finally {
     window.clearTimeout(timer);
     externalSignal?.removeEventListener("abort", abort);

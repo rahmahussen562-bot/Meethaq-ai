@@ -16,8 +16,9 @@ from grounding import (
     policy_signature, query_terms, render_evidence,
 )
 from llm_synthesis import (
+    FallbackSynthesizer, LLMUnavailable, OpenAICompatibleSynthesizer,
     SynthesisRejected, SynthesisResult, attach_deterministic_citations,
-    validate_synthesis,
+    build_synthesizer, validate_synthesis,
 )
 from rag_pipeline import RAGPipeline, TextChunker
 
@@ -89,6 +90,75 @@ class GroundingTests(unittest.TestCase):
             from llm_synthesis import OllamaSynthesizer
             with self.assertRaises(ValueError):
                 OllamaSynthesizer("test-model")
+
+    def test_groq_payload_is_deterministic_and_output_is_validated(self):
+        sources = [{"label": "[Source 1]", "text":
+                    "Either party may terminate on 30 days written notice."}]
+        requests = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        payloads = iter([
+            {"data": [{"id": "openai/gpt-oss-20b"}]},
+            {"choices": [{"message": {"content": json.dumps({
+                "abstain": False,
+                "answer": "Either party may terminate on 30 days written notice. [Source 1]",
+            })}}], "usage": {"completion_tokens": 18}},
+        ])
+
+        def respond(request, timeout):
+            requests.append((request, timeout))
+            return Response(next(payloads))
+
+        synthesizer = OpenAICompatibleSynthesizer(
+            model="openai/gpt-oss-20b",
+            base_url="https://api.groq.com/openai/v1",
+            api_key="test-secret",
+            provider="groq",
+        )
+        with mock.patch("llm_synthesis.urlopen", side_effect=respond):
+            result = synthesizer.synthesize("What termination notice applies?", sources)
+        self.assertEqual(result.cited_labels, ("[Source 1]",))
+        request = requests[-1][0]
+        body = json.loads(request.data)
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["seed"], 0)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(request.headers["Authorization"], "Bearer test-secret")
+
+    def test_cloud_provider_configuration_and_unavailable_fallback(self):
+        with mock.patch.dict("os.environ", {
+            "MEETHAQ_LLM_PROVIDER": "groq",
+            "GROQ_API_KEY": "test-secret",
+        }, clear=True):
+            synthesizer = build_synthesizer("local-model")
+        self.assertIsInstance(synthesizer, OpenAICompatibleSynthesizer)
+        self.assertEqual(synthesizer.model, "openai/gpt-oss-20b")
+
+        class Provider:
+            def __init__(self, model, result=None):
+                self.model, self.result = model, result
+                self.last_status, self.last_error, self.last_metrics = "ready", None, {}
+            def health(self):
+                return {"llm_ready": self.result is not None, "llm_model": self.model,
+                        "llm_diagnostic": "offline"}
+            def synthesize(self, question, sources):
+                if self.result is None:
+                    raise LLMUnavailable("offline")
+                return self.result
+
+        expected = SynthesisResult("Supported. [Source 1]", ("[Source 1]",))
+        fallback = FallbackSynthesizer([Provider("local"), Provider("remote", expected)])
+        self.assertEqual(fallback.synthesize("question", []), expected)
+        self.assertEqual(fallback.model, "remote")
 
     def test_strict_unrounded_distance_boundary(self):
         rejected = [candidate(distance=0.45), candidate(distance=0.4500000001),

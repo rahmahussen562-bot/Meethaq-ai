@@ -33,7 +33,9 @@ async def lifespan(app: FastAPI):
         _pipeline = None
 
 
-app = FastAPI(title="Meethaq AI Local Server", lifespan=lifespan)
+app = FastAPI(title="Meethaq AI Contract Audit API", lifespan=lifespan)
+
+PRODUCTION_FRONTEND_ORIGIN = "https://meethaq-ai.rahmahussen562.workers.dev"
 
 # Anchored host matching prevents suffix tricks such as pages.dev.evil.example.
 # Cookies are not used, so credentials are disabled.
@@ -61,7 +63,7 @@ def additional_origins() -> list[str]:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=additional_origins(),
+    allow_origins=[PRODUCTION_FRONTEND_ORIGIN, *additional_origins()],
     allow_origin_regex=ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -75,7 +77,19 @@ def get_rag() -> RAGPipeline:
         with _pipeline_lock:
             if _pipeline is None:
                 try:
-                    _pipeline = RAGPipeline()
+                    pipeline = RAGPipeline()
+                    expected = os.getenv("MEETHAQ_EXPECTED_CHUNKS", "").strip()
+                    if expected:
+                        if not expected.isdigit() or int(expected) < 1:
+                            pipeline.close()
+                            raise ValueError("MEETHAQ_EXPECTED_CHUNKS must be a positive integer")
+                        actual = pipeline.vector_store.collection.count()
+                        if actual != int(expected):
+                            pipeline.close()
+                            raise RuntimeError(
+                                f"Packaged index has {actual} chunks; expected {expected}"
+                            )
+                    _pipeline = pipeline
                 except Exception as exc:
                     logger.exception("Persistent contract index initialization failed")
                     raise HTTPException(
@@ -115,8 +129,9 @@ def run_audit(req: AuditRequest, rag: RAGPipeline = Depends(get_rag)):
 def get_telemetry(rag: RAGPipeline = Depends(get_rag)):
     try:
         stats = rag.stats()
-        return {**stats, "total_chunks": stats["indexed_chunks"],
-                "status": "Air-Gapped Local Host"}
+        llm = rag.llm_health()
+        return {**stats, **llm, "total_chunks": stats["indexed_chunks"],
+                "status": os.getenv("MEETHAQ_STATUS", "Meethaq Backend")}
     except Exception as exc:
         logger.exception("Persistent contract telemetry failed")
         raise HTTPException(
@@ -128,11 +143,10 @@ def get_telemetry(rag: RAGPipeline = Depends(get_rag)):
 @app.get("/api/health")
 def get_health(rag: RAGPipeline = Depends(get_rag)):
     telemetry = get_telemetry(rag)
-    llm = rag.llm_health()
     ready = (telemetry["indexed_chunks"] > 0
              and telemetry["calibration_status"] == "calibrated"
-             and llm["llm_ready"] is True)
-    return {**telemetry, **llm, "status": "ready" if ready else "not_ready", "ready": ready}
+             and telemetry["llm_ready"] is True)
+    return {**telemetry, "status": "ready" if ready else "not_ready", "ready": ready}
 
 
 if __name__ == "__main__":

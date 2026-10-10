@@ -20,6 +20,8 @@ export interface TelemetryResponse {
   rerank_model?: string;
   llm_model?: string;
   llm_status?: string;
+  llm_provider?: string;
+  llm_ready?: boolean;
   llm_invoked?: boolean;
   answer_mode?: string;
   calibration_status?: string;
@@ -57,7 +59,7 @@ export function resolveApiBaseUrl(configured: string | undefined, origin: string
     throw new ApiError("VITE_API_URL cannot contain credentials, query parameters, or a fragment.", "configuration");
   }
   if (!local && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-    throw new ApiError("This deployment points to a loopback API. Set VITE_API_URL to your HTTPS tunnel URL and rebuild.", "configuration");
+    throw new ApiError("This deployment points to a loopback API. Set VITE_API_URL to the persistent HTTPS backend and rebuild.", "configuration");
   }
   if (page.protocol === "https:" && url.protocol === "http:" && !local) {
     throw new ApiError("This HTTPS deployment requires an HTTPS API URL.", "configuration");
@@ -74,10 +76,11 @@ export function parseTelemetry(value: unknown): TelemetryResponse {
   if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw new ApiError("The API did not return a valid indexed chunk count.", "protocol");
   if (data.indexed_chunks !== undefined && data.total_chunks !== undefined && data.indexed_chunks !== data.total_chunks) throw new ApiError("The API returned inconsistent chunk counts.", "protocol");
   const telemetry: TelemetryResponse = { indexed_chunks: count, total_chunks: count };
-  for (const key of ["collection", "embed_model", "rerank_model", "llm_model", "llm_status", "status", "answer_mode", "calibration_status"] as const) {
+  for (const key of ["collection", "embed_model", "rerank_model", "llm_model", "llm_status", "llm_provider", "status", "answer_mode", "calibration_status"] as const) {
     if (typeof data[key] === "string") telemetry[key] = data[key];
   }
   if (typeof data.llm_invoked === "boolean") telemetry.llm_invoked = data.llm_invoked;
+  if (typeof data.llm_ready === "boolean") telemetry.llm_ready = data.llm_ready;
   return telemetry;
 }
 export function parseAuditResponse(value: unknown): AuditResponse {
