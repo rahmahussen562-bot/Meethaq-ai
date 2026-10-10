@@ -110,6 +110,10 @@ class GroundingTests(unittest.TestCase):
             {"data": [{"id": "openai/gpt-oss-20b"}]},
             {"choices": [{"message": {"content": json.dumps({
                 "abstain": False,
+                "answer": "The sample service must renew every 30 days. [Source 1]",
+            })}}]},
+            {"choices": [{"message": {"content": json.dumps({
+                "abstain": False,
                 "answer": "Either party may terminate on 30 days written notice. [Source 1]",
             })}}], "usage": {"completion_tokens": 18}},
         ])

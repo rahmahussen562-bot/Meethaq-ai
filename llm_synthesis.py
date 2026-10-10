@@ -389,6 +389,37 @@ class OpenAICompatibleSynthesizer:
                     raise RemoteLLMUnavailable(
                         f"{self.provider} model is unavailable: {self.model}"
                     )
+                # Model discovery alone does not prove that the configured
+                # response format can complete. Probe it with invented text so
+                # readiness never transmits indexed contract evidence.
+                probe = self._request(
+                    "/chat/completions",
+                    self._completion_payload(
+                        "When must the sample service renew?",
+                        [{"label": "[Source 1]", "text":
+                          "The sample service must renew every 30 days."}],
+                    ),
+                    timeout=min(self.timeout_seconds, 15.0),
+                )
+                probe_choices = probe.get("choices")
+                probe_content = None
+                if (isinstance(probe_choices, list) and probe_choices
+                        and isinstance(probe_choices[0], dict)):
+                    probe_message = probe_choices[0].get("message")
+                    if isinstance(probe_message, dict):
+                        probe_content = probe_message.get("content")
+                try:
+                    probe_result = json.loads(probe_content)
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise RemoteLLMUnavailable(
+                        f"{self.provider} structured-output probe returned invalid JSON"
+                    ) from exc
+                if (not isinstance(probe_result, dict)
+                        or type(probe_result.get("abstain")) is not bool
+                        or not isinstance(probe_result.get("answer"), str)):
+                    raise RemoteLLMUnavailable(
+                        f"{self.provider} structured-output probe returned an invalid schema"
+                    )
             else:
                 payload = self._request("/chat/completions", {
                     "model": self.model,
@@ -424,12 +455,7 @@ class OpenAICompatibleSynthesizer:
         self._health_result = result
         return dict(result)
 
-    def synthesize(self, question: str, sources: list[dict]) -> SynthesisResult | None:
-        health = self.health()
-        if not health["llm_ready"]:
-            raise RemoteLLMUnavailable(str(
-                health.get("llm_diagnostic", f"{self.provider} unavailable")
-            ))
+    def _completion_payload(self, question: str, sources: list[dict]) -> dict:
         system_prompt, user_prompt = _prompts(question, sources)
         request_payload = {
             "model": self.model,
@@ -459,6 +485,15 @@ class OpenAICompatibleSynthesizer:
                 request_payload["reasoning_effort"] = "low"
             else:
                 request_payload["response_format"] = {"type": "json_object"}
+        return request_payload
+
+    def synthesize(self, question: str, sources: list[dict]) -> SynthesisResult | None:
+        health = self.health()
+        if not health["llm_ready"]:
+            raise RemoteLLMUnavailable(str(
+                health.get("llm_diagnostic", f"{self.provider} unavailable")
+            ))
+        request_payload = self._completion_payload(question, sources)
         response = self._request("/chat/completions", request_payload)
         usage = response.get("usage")
         self.last_metrics = usage if isinstance(usage, dict) else {}
