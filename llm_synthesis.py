@@ -23,6 +23,15 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_KEEP_ALIVE = "24h"
 MAX_SYNTHESIS_CHARACTERS = 4000
+_SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "abstain": {"type": "boolean"},
+        "answer": {"type": "string"},
+    },
+    "required": ["abstain", "answer"],
+    "additionalProperties": False,
+}
 
 _CITATION = re.compile(r"\[Source ([1-9]\d*)\]")
 _TRAILING_CITATIONS = re.compile(
@@ -431,11 +440,25 @@ class OpenAICompatibleSynthesizer:
             "temperature": 0,
             "top_p": 1,
             "seed": 0,
-            "max_completion_tokens": 80,
+            "max_completion_tokens": 192,
             "stream": False,
         }
         if self.json_mode:
-            request_payload["response_format"] = {"type": "json_object"}
+            if self.provider == "groq" and self.model in {
+                    "openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
+                # GPT-OSS supports Groq's constrained JSON Schema mode. The
+                # older json_object mode can fail before returning content.
+                request_payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "meethaq_audit",
+                        "strict": True,
+                        "schema": _SYNTHESIS_SCHEMA,
+                    },
+                }
+                request_payload["reasoning_effort"] = "low"
+            else:
+                request_payload["response_format"] = {"type": "json_object"}
         response = self._request("/chat/completions", request_payload)
         usage = response.get("usage")
         self.last_metrics = usage if isinstance(usage, dict) else {}

@@ -131,7 +131,24 @@ class GroundingTests(unittest.TestCase):
         body = json.loads(request.data)
         self.assertEqual(body["temperature"], 0)
         self.assertEqual(body["seed"], 0)
-        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(body["response_format"], {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "meethaq_audit",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "abstain": {"type": "boolean"},
+                        "answer": {"type": "string"},
+                    },
+                    "required": ["abstain", "answer"],
+                    "additionalProperties": False,
+                },
+            },
+        })
+        self.assertEqual(body["reasoning_effort"], "low")
+        self.assertEqual(body["max_completion_tokens"], 192)
         self.assertEqual(request.headers["Authorization"], "Bearer test-secret")
 
     def test_cloud_provider_configuration_and_unavailable_fallback(self):
